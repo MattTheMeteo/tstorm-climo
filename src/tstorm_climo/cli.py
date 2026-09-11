@@ -6,6 +6,8 @@ import argparse
 import sys
 
 from tstorm_climo.climatology import Climatology
+from tstorm_climo.osm import KIND_TAGS, build_query, run_query
+from tstorm_climo.places import deduplicate, from_overpass, save_csv
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,6 +35,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inclusive end of the time range (e.g. 2025-07-31).",
     )
 
+    fetch = subparsers.add_parser(
+        "fetch-places",
+        help="Fetch named places from OpenStreetMap via Overpass.",
+    )
+    fetch.add_argument(
+        "--bbox",
+        required=True,
+        nargs=4,
+        type=float,
+        metavar=("SOUTH", "WEST", "NORTH", "EAST"),
+        help="Bounding box in decimal degrees.",
+    )
+    fetch.add_argument(
+        "--kind",
+        action="append",
+        choices=sorted(KIND_TAGS),
+        help="Place kind to fetch; repeatable.",
+    )
+    fetch.add_argument(
+        "--named-only",
+        action="store_true",
+        help="Drop places without a name tag.",
+    )
+    fetch.add_argument(
+        "--no-dedupe",
+        action="store_true",
+        help="Skip near-duplicate removal.",
+    )
+    fetch.add_argument(
+        "--output",
+        required=True,
+        help="CSV path to write the places to.",
+    )
+
     return parser
 
 
@@ -46,6 +82,23 @@ def main(argv: list[str] | None = None) -> int:
         events = climo.summarize(args.start, args.end)
         for time, count in events.items():
             print(f"{time}: {count} grid points with precipitation")
+        return 0
+
+    if args.command == "fetch-places":
+        kinds = args.kind or list(KIND_TAGS)
+        query = build_query(tuple(args.bbox), kinds)
+        elements = run_query(query)
+        places = [
+            place
+            for element in elements
+            if (place := from_overpass(kinds, element)) is not None
+        ]
+        if args.named_only:
+            places = [p for p in places if p.name]
+        if not args.no_dedupe:
+            places = deduplicate(places)
+        save_csv(places, args.output)
+        print(f"Wrote {len(places)} places to {args.output}")
         return 0
 
     return 1

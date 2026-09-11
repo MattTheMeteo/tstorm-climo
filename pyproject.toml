@@ -8,7 +8,7 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "cfgrib>=0.9.15.1",
+    "dynamical-catalog>=0.8.0",
     "xarray>=2026.7.0",
 ]
 

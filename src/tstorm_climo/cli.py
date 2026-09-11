@@ -20,13 +20,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     summarize = subparsers.add_parser(
         "summarize",
-        help="Summarize precipitation events from a set of HRRR analysis files.",
+        help="Summarize precipitation events over a time range.",
     )
     summarize.add_argument(
-        "inputs",
-        nargs="+",
-        metavar="FILE",
-        help="HRRR analysis files (GRIB2) to summarize.",
+        "--start",
+        required=True,
+        help="Inclusive start of the time range (e.g. 2025-07-01).",
+    )
+    summarize.add_argument(
+        "--end",
+        required=True,
+        help="Inclusive end of the time range (e.g. 2025-07-31).",
     )
 
     return parser
@@ -39,8 +43,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "summarize":
         climo = Climatology()
-        events = climo.add_precipitation_events(args.inputs)
-        for time, count in sorted(events.items()):
+        events = climo.summarize(args.start, args.end)
+        for time, count in events.items():
             print(f"{time}: {count} grid points with precipitation")
         return 0
 

@@ -3,29 +3,47 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
 
-from tstorm_climo.hrrr import load_precipitation
+import numpy as np
+
+from tstorm_climo.hrrr import Opener, load_precipitation
 
 
-@dataclass
 class Climatology:
     """Accumulates precipitation events into a climatology.
 
-    For now this tracks when rain has fallen; counts are keyed by the
-    valid time of each HRRR analysis step.
+    A grid point "received rain" during a step when the hourly-average
+    precipitation rate is positive.
     """
 
-    # valid time (ISO string) -> number of grid points with precipitation
-    events: dict[str, int] = field(default_factory=dict)
+    def summarize(
+        self,
+        start: str,
+        end: str,
+        files: Iterable[str] | None = None,
+        *,
+        opener: Opener | None = None,
+    ) -> dict[str, int]:
+        """Count precipitation grid points for each hourly analysis step.
 
-    def add_precipitation_events(self, files: Iterable[str]) -> dict[str, int]:
-        """Count precipitation grid points for each given HRRR analysis file."""
-        for path in files:
-            ds = load_precipitation(path)
-            valid_time = str(ds.attrs["valid_time"])
-            # Precipitation in HRRR surface analyses is accumulated; a grid
-            # point "received rain" if the accumulated value is positive.
-            wet = ds["precipitation"] > 0
-            self.events[valid_time] = int(wet.sum())
-        return self.events
+        Args:
+            start: Inclusive start of the time range.
+            end: Inclusive end of the time range.
+            files: Deprecated file list; accepted for backwards
+                compatibility and ignored.
+            opener: Override for ``dynamical_catalog.open`` (for tests).
+
+        Returns:
+            Mapping of ISO valid time to the number of grid points with
+            precipitation.
+        """
+        del files  # unused; kept only for backwards compatibility
+        ds = load_precipitation(start, end, opener=opener)
+        wet = ds["precipitation"] > 0
+        counts = wet.sum(dim=("y", "x"))
+        return {
+            np.datetime_as_string(time, unit="s"): int(count)
+            for time, count in zip(
+                counts["time"].values, counts.values, strict=True
+            )
+        }

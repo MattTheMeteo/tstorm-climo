@@ -1,4 +1,8 @@
-"""tstorm-climo: build a precipitation climatology from HRRR analysis data."""
+"""tstorm-climo: build a precipitation climatology from HRRR analysis data.
+
+Data is read from dynamical.org's Icechunk Zarr archive of HRRR analyses
+via the dynamical-catalog package.
+"""
 
 from __future__ import annotations
 

@@ -131,29 +131,41 @@ injected `opener`; no network in the fast test suite.
      memory, rather than issuing a scattered read per place (the archive
      chunks y/x at 135 km, so point reads are cheap, scattered reads
      are not).
-3. **Per-place climatology summary.** *(next)*
-   - `wet = precipitation_mm_per_hour > threshold`, threshold given in
-     **mm/h**. Filter on `valid` so archive gaps are excluded rather
-     than counted as dry.
-   - Measured June 2024 (720 h/course): `> 0` marks 11.6% of hours,
-     `> 0.1` ≈ 44%, `> 0.5` ≈ 22%, `> 1.0` ≈ 13%. Notably there is
-     **no numerical dust** — every wet hour is a real `> 0` value, so
-     the threshold choice is about physical meaning, not float noise.
-   - Times are UTC; golf is a **local-time** question. Each place
-     carries an IANA `timezone` looked up from its coordinates
-     (`tzfpy`, 2.9 MB bundled boundary data). The summary layer must
-     **partition by zone and convert per group** — polars'
-     `convert_time_zone` accepts only a static string, not a column —
-     and must use real zone names, not a fixed offset: EST is UTC−5 and
-     EDT is UTC−4, so a hardcoded −4 is wrong for half the year.
-     Verified with three zones in one extraction (Eastern, Mountain,
-     Pacific). No hardcoding, so a CONUS bbox works unchanged.
-     Note `tzfpy.get_tz` takes `(lng, lat)`, reversed from our
-     `timezone_at(lat, lon)`; `places.py` wraps it so callers cannot
-     get that wrong.
-   - Output a polars table: place × (wet count, wet fraction, rain
-     hours) sliced by hour-of-day and month; the "Chuck scorecard" is a
-     filter on this table.
+3. ~~**Per-place climatology summary.**~~ **DONE**
+   (`tstorm_climo/summarize.py`). Default threshold **0.5 mm/h**
+   ("it actually rained on the course"), overridable per call; the
+   `> 0` end of the range stays available for "the turf was damp".
+   - `place_summary` → per place: `valid_hours`/`coverage` (data
+     quality), `wet_hours`/`wet_fraction`, `rain_mm` (depth; each step
+     is one hour so mm/h sums to mm), `tied`/`cell_places` (grid-node
+     collisions), and a dense `rank` where 1 is driest.
+   - `by_local_month`, `by_local_hour` → slices in **local** time,
+     normalized by hours observed (a local hour seen 12 times and wet 6
+     times is 0.5, not 1.0).
+   - `scorecard(kind=, month=)` → the Chuck table, driest first, tied
+     places adjacent.
+   - Local time is converted by partitioning on `tz_name` and
+     converting per group — polars' `convert_time_zone` takes a static
+     string, not a column. Verified against a fixed-offset model: 0
+     mismatches in summer (EDT, UTC−4) and 0 in winter (EST, UTC−5).
+
+   **First results, 50 courses × 2018–2026, 0.5 mm/h (12.9 s end to
+   end):**
+   - Overall wet fraction spans only **4.9%–5.4%** across all 50
+     courses. The spread is ~5.8 standard errors (SE ≈ 0.084 pp with
+     ~70k valid hours), so it is real signal — but the effect size is
+     small, and the leaderboard differences are correspondingly small.
+   - June alone spans **2.5%–3.0%**.
+   - **Diurnal signal is weak**: by local hour, wet fraction varies only
+     4.6%–5.5% across the day, with a shallow maximum around 07:00 and
+     a minimum mid-afternoon. Not a pipeline artifact — verified in
+     summer-restricted data at four thresholds (max/min ratio 1.30 at
+     `> 0`, 1.73 at `> 0.5`, 2.12 at `> 2`), and local-time assignment
+     checked against a fixed-offset model in both DST seasons.
+     Plausible meteorology: much of New England summer rain is
+     stratiform or frontal rather than convective, so the classic
+     afternoon-convection peak is muted. Worth stating in any published
+     output rather than presenting the flat curve as a bug.
 4. **CLI**: `rain-report --places places.csv --start/--end`, printing a
    ranked table (e.g. driest-to-wettest June at each course).
 

@@ -84,17 +84,33 @@ injected `opener`; no network in the fast test suite.
      ceiling of half a cell diagonal ≈ 2.11 km. Every place falls inside
      its own cell; coasts and domain edges are not a problem.
    - **Known resolution limit:** the 110 places occupy only **86 distinct
-     grid nodes**. 42 places (including 13 of the 50 golf courses) share
-     a node with at least one other place, with up to 4 places on a
+     grid nodes**; 18 nodes hold more than one place, with up to 4 on a
      single node. A 3 km analysis grid cannot separate co-located
-     courses, and a 3×3 neighbourhood average does *not* help, since
-     co-located places share the window too. This cannot be engineered
-     away — only handled honestly. See open questions below.
+     places. Scoped to the golf leaderboard that actually matters:
+     - The 50 courses occupy 47 nodes. **44 courses sit alone** on their
+       node; **6 courses form 3 unrankable pairs** — Fresh Pond /
+       Oakley (1.76 km), Garrison Par 3 / Northfields (1.36 km), and
+       King Rail / Reedy Meadow (1.57 km).
+     - A further 7 courses share a node with a *beach* (Essex County
+       Club, Rockport, Bass Rocks, Winthrop, Winchester, Tedesco, New
+       Meadows). This does **not** disturb the course ranking — a beach
+       sharing a course's number is harmless. Worth knowing only so the
+       beach chart doesn't look like it is contradicting the course one.
+     - Worst single cell overall is `y=272 x=1621` (42.5770, -70.7472),
+       holding 4 places: Essex County Club plus Black, Graves and
+       Singing Beaches, spread 2.64 km.
+   - A 3×3 neighbourhood average was **considered and rejected**: it
+     costs 9× the reads and does not separate co-located places, since
+     they share the window too. It would only blur the grid, not sharpen
+     the answer.
 2. **Point/neighborhood extraction.** *(next)*
    - Per place, extract the hourly precipitation time series at the
-     nearest grid point. Also support a 3×3 neighborhood read (fraction
-     of wet neighbors) to smooth edge effects — testable via `opener`
-     injection.
+     nearest grid point. Single-point only: the 3×3 neighborhood was
+     considered and rejected (see the note in step 1 above).
+   - Read the places' bounding box as one contiguous block and index in
+     memory, rather than issuing a scattered read per place (the archive
+     chunks y/x at 135 km, so point reads are cheap, scattered reads
+     are not).
 3. **Per-place climatology summary.**
    - `wet_events = precipitation > threshold` (threshold TBD — 0 vs a
      small value like 0.01 mm/h is an explicit, documented choice).
@@ -154,17 +170,18 @@ injected `opener`; no network in the fast test suite.
 
 ## Open design questions
 
-- **Co-located places (decided: report, don't hide).** 42 of 110 places
-  share a grid node, so their wet-hour counts will be identical and the
-  leaderboard ranks them arbitrarily. Options considered:
+- **Co-located places (decided: report, don't hide).** 18 grid nodes hold
+  more than one place, so those places share identical wet-hour counts.
+  For the golf leaderboard this affects **3 pairs (6 of 50 courses)**.
+  Options considered:
   1. *(chosen)* Add a `grid_cell` column, rank within cells, and label
-     unresolved pairs explicitly — "these 13 cannot be separated by this
-     data" beats a precise-looking wrong number.
+     unresolved pairs explicitly — "these 3 pairs cannot be separated by
+     this data" beats a precise-looking wrong number.
   2. Naive ranking with a footnote — rejected, because the footnote is
      the only signal and it is easy to miss.
-  A 3×3 window does not resolve this: co-located places share the
-  window. If finer separation is ever genuinely needed, the only real
-  fix is a finer dataset, not a different sampling of HRRR.
+  The course-vs-beach overlaps (7 courses) need no treatment beyond a
+  note. If finer separation is ever genuinely needed, the only real fix
+  is a finer dataset, not a different sampling of HRRR.
 - **Wet threshold.** Rate > 0 counts even sub-drizzle, which is
   realistic for "the turf was wet" but could overstate "it rained on my
   round." Needs a decision informed by Phase 2's sensitivity study.

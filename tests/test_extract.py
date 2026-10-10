@@ -132,6 +132,7 @@ def test_values_are_read_from_the_right_grid_node() -> None:
     )
     assert rates[0] == pytest.approx(0.0)
     assert rates[1] == pytest.approx(0.036)
+    assert set(rates) == {0, 1}
 
 
 def test_nan_is_flagged_invalid_not_treated_as_dry() -> None:
@@ -250,7 +251,10 @@ def test_colocated_places_get_identical_series() -> None:
         places, "2025-07-01", "2025-08-01", opener=make_opener(rate, times)
     )
     by_id = out.group_by("place_id").agg(pl.col(RATE_COLUMN))
-    assert by_id[RATE_COLUMN][0].to_list() == by_id[RATE_COLUMN][1].to_list()
+    series = dict(
+        zip(by_id["place_id"].to_list(), by_id[RATE_COLUMN].to_list(), strict=True)
+    )
+    assert series[0] == series[1]
     assert out["y_index"].n_unique() == 1
     assert out["x_index"].n_unique() == 1
 
@@ -272,7 +276,10 @@ def test_timezone_is_carried_through() -> None:
         places, "2025-07-01", "2025-08-01", opener=flat_opener(0.0, 2)
     )
     zones = out.group_by("place_id").agg(pl.col("tz_name").first())
-    assert zones["tz_name"].to_list() == ["America/New_York", "America/Denver"]
+    # Keyed lookup, not positional: group_by row order is not guaranteed.
+    assert dict(
+        zip(zones["place_id"].to_list(), zones["tz_name"].to_list(), strict=True)
+    ) == {0: "America/New_York", 1: "America/Denver"}
 
 
 def test_mixed_timezones_can_be_partitioned_and_converted() -> None:

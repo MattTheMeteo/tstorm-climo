@@ -141,13 +141,16 @@ injected `opener`; no network in the fast test suite.
      the threshold choice is about physical meaning, not float noise.
    - Times are UTC; golf is a **local-time** question. Each place
      carries an IANA `timezone` looked up from its coordinates
-     (`timezonefinder`, ~30 MB bundled boundary data). The summary
-     layer must **partition by zone and convert per group** — polars'
+     (`tzfpy`, 2.9 MB bundled boundary data). The summary layer must
+     **partition by zone and convert per group** — polars'
      `convert_time_zone` accepts only a static string, not a column —
      and must use real zone names, not a fixed offset: EST is UTC−5 and
      EDT is UTC−4, so a hardcoded −4 is wrong for half the year.
      Verified with three zones in one extraction (Eastern, Mountain,
      Pacific). No hardcoding, so a CONUS bbox works unchanged.
+     Note `tzfpy.get_tz` takes `(lng, lat)`, reversed from our
+     `timezone_at(lat, lon)`; `places.py` wraps it so callers cannot
+     get that wrong.
    - Output a polars table: place × (wet count, wet fraction, rain
      hours) sliced by hour-of-day and month; the "Chuck scorecard" is a
      filter on this table.

@@ -116,18 +116,23 @@ def test_timezone_at_falls_back_to_utc_when_unresolvable(
 ) -> None:
     """An unresolvable coordinate yields UTC rather than raising.
 
-    Checked by stubbing the finder: timezonefinder covers ocean and
-    polar regions with Etc/GMT zones, so no real coordinate reaches the
-    fallback.
+    Stubbed, because tzfpy resolves ocean and polar regions to Etc/GMT
+    zones, so no real coordinate reaches the fallback.
     """
     import tstorm_climo.places as places_module
 
-    class Blank:
-        def timezone_at(self, lat: float, lng: float) -> None:
-            return None
-
-    monkeypatch.setattr(places_module, "_finder", Blank())
+    monkeypatch.setattr(places_module, "get_tz", lambda lng, lat: "")
     assert places_module.timezone_at(42.0, -70.9) == "UTC"
+
+
+def test_timezone_at_swaps_lat_lng_for_tzfpy() -> None:
+    """tzfpy takes (lng, lat); a swapped call would silently misplace.
+
+    Guard: a point in Massachusetts must not resolve to a zone that
+    only makes sense for the reversed coordinate.
+    """
+    assert timezone_at(42.5849, -70.7618) == "America/New_York"
+    assert timezone_at(42.5849, -70.7618) != timezone_at(-70.7618, 42.5849)
 
 
 def test_timezone_at_resolves_ocean_to_etc_zone() -> None:

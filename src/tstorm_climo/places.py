@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 from pydantic import BaseModel
-from timezonefinder import TimezoneFinder
+from tzfpy import get_tz
 
 from tstorm_climo.osm import KIND_TAGS
 
@@ -54,24 +54,24 @@ def classify(tags: dict[str, str], kinds: list[str]) -> str | None:
     return None
 
 
-_finder: TimezoneFinder | None = None
-
-
 def timezone_at(lat: float, lon: float) -> str:
     """Return the IANA timezone name containing a coordinate.
 
-    Uses ``timezonefinder``'s bundled boundary data. Falls back to
+    Uses ``tzfpy``'s bundled boundary data (2.9 MB). Falls back to
     ``UTC`` rather than raising: a place we cannot place in a timezone
     is still worth keeping, and UTC is an honest label for "we do not
     know". Places near a zone boundary can resolve to either side.
 
-    The ``TimezoneFinder`` object loads ~30 MB of boundary data, so it is
-    built once per process and reused.
+    Args:
+        lat: Latitude in decimal degrees.
+        lon: Longitude in decimal degrees.
+
+    Returns:
+        An IANA zone name, or ``UTC`` when the coordinate resolves to
+        nothing. Note ``tzfpy`` takes ``(lng, lat)``, the reverse of
+        this signature.
     """
-    global _finder
-    if _finder is None:
-        _finder = TimezoneFinder()
-    return _finder.timezone_at(lat=lat, lng=lon) or UTC_TIMEZONE
+    return get_tz(float(lon), float(lat)) or UTC_TIMEZONE
 
 
 def from_overpass(kinds: list[str], element: dict) -> Place | None:

@@ -104,6 +104,14 @@ injected `opener`; no network in the fast test suite.
      they share the window too. It would only blur the grid, not sharpen
      the answer.
 2. **Point/neighborhood extraction.** *(next)*
+   - Source field: **`precipitation_surface`** (GRIB short name `prate`),
+     units kg m-2 s-1, "average precipitation rate since the previous
+     forecast step". It is a **rate**, not an accumulation — the archive
+     carries no APCP, so accumulating across steps is our job.
+   - Nearby fields that are *not* substitutes: `snowfall_surface`
+     (`tsrate`, m s-1 of snow **depth**, ~10× density difference);
+     `composite_reflectivity` (dBZ, the independent radar check);
+     `precipitable_water_atmosphere` (moisture, not precipitation).
    - Per place, extract the hourly precipitation time series at the
      nearest grid point. Single-point only: the 3×3 neighborhood was
      considered and rejected (see the note in step 1 above).
@@ -130,23 +138,28 @@ injected `opener`; no network in the fast test suite.
 5. **Rain-event definition.** Merge consecutive wet hours into discrete
    rain events (min duration, min separation), per place. Track event
    start hour-of-day, duration, and total accumulation where possible.
-6. **Spatial averaging over a course footprint.** A course spans well
-   under one 3-km cell, but a 3×3 window around its centroid still lets
-   us report "rain nearby" vs "rain on the turf."
-7. **Threshold sensitivity study.** Compare dry/wet fractions across
-   thresholds (0, 0.01, 0.1, 1 mm/h) and against
-   `categorical_rain_surface`; document the recommended default.
+6. ~~**Spatial averaging over a course footprint.**~~ **Dropped.** A
+   generic 3×3 window is identical for any two points in the same cell,
+   so it blurs without separating. A true footprint average (area-weight
+   the OSM polygon over covered cells) could separate some co-located
+   courses, but needs `pyproj` + polygon-clipping and re-fetching
+   geometry — two new dependencies and a schema change to resolve 3
+   pairs out of 50 courses. Not worth it. Revisit only if a finer
+   dataset becomes available.
+7. **Threshold sensitivity study.** Compare wet fractions across
+   thresholds (0, 0.1, 0.5, 1 mm/h — see the units note in open
+   questions) and against `categorical_rain_surface`, which may be a
+   more honest rain-vs-drizzle boundary than any rate cutoff. Document
+   the recommended default.
 
 ### Phase 3: Scale and memory strategy
 
-8. **Caching/staging layer — likely unnecessary, deprioritized.**
-   Measured against the live archive: the North Shore block is only
+8. ~~**Caching/staging layer.**~~ **Dropped.** Measured against the live
+   archive, the premise did not hold: the North Shore block is only
    **26 × 21 nodes**, and the *entire* 2018–2026 window over that block
-   is **153 MB in ~12 s**, with no cache priming. A full-year read is
-   ~19 MB / ~2 s. The "bad for multi-year × multi-place loops" worry did
-   not materialize: one contiguous block read, then index in memory,
-   covers everything. Build a parquet staging layer only if a real need
-   appears (many regions at once, or CONUS rather than a bbox).
+   is **153 MB in ~12 s**, with no cache priming needed. A full-year read
+   is ~19 MB / ~2 s. One contiguous block read, then index in memory,
+   covers every use case we have. No staging layer.
 9. **Adapt to archive format changes.** dynamical.org keeps
    `analysis` (time-optimized), `analysis-virtual` (map-optimized), plus
    forecast and 18 h low-latency variants. Confirm which is best for

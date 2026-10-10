@@ -10,6 +10,13 @@ import xarray as xr
 # dynamical.org's HRRR analysis archive (2014-10-01 to present, hourly).
 HRRR_ANALYSIS_DATASET_ID = "noaa-hrrr-analysis"
 
+# Start of the usable analysis window. The archive is sparse before 2018
+# and has gaps through 2020; missing data arrives as NaN, and NaN fails
+# any "precipitation > threshold" test, so a pre-2018 gap would score as
+# *dry* and bias a climatology toward "it never rained". Clamping reads
+# to this date keeps that from happening.
+MIN_VALID_DATE = "2018-01-01"
+
 # Average precipitation rate since the previous step, kg m-2 s-1.
 PRECIPITATION_VARIABLE = "precipitation_surface"
 
@@ -41,5 +48,5 @@ def load_precipitation(
     """
     open_fn = opener or _open
     da = open_fn(dataset_id, chunks=None)[PRECIPITATION_VARIABLE]
-    da = da.sel(time=slice(start, end))
+    da = da.sel(time=slice(max(start, MIN_VALID_DATE), end))
     return da.to_dataset(name="precipitation")

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import numpy as np
 import polars as pl
 from pydantic import BaseModel
 
 from tstorm_climo.osm import KIND_TAGS
+
+EARTH_RADIUS_KM = 6371.0
 
 
 class Place(BaseModel):
@@ -95,14 +98,24 @@ def deduplicate(places: list[Place], tol_km: float = 1.0) -> list[Place]:
     return kept
 
 
+def great_circle_km(lat1: float, lon1: float, lat2: float, lon2: float):
+    """Great-circle distance between two lat/lon points, in kilometers.
+
+    Arguments may be scalars or numpy arrays; the return type matches.
+    """
+    rlat1, rlat2 = np.radians(lat1), np.radians(lat2)
+    dlat, dlon = np.radians(lat2 - lat1), np.radians(lon2 - lon1)
+    h = (
+        np.sin(dlat / 2) ** 2
+        + np.cos(rlat1) * np.cos(rlat2) * np.sin(dlon / 2) ** 2
+    )
+    # Clip before asin: floating point can push h just past 1.
+    return 2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(np.clip(h, 0.0, 1.0)))
+
+
 def haversine_km(a: Place, b: Place) -> float:
     """Great-circle distance between two places, in kilometers."""
-    from math import asin, cos, radians, sin, sqrt
-
-    lat1, lat2 = radians(a.lat), radians(b.lat)
-    dlat, dlon = radians(b.lat - a.lat), radians(b.lon - a.lon)
-    h = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-    return 2 * 6371.0 * asin(min(1.0, sqrt(h)))
+    return great_circle_km(a.lat, a.lon, b.lat, b.lon)
 
 
 def to_polars(places: list[Place]) -> pl.DataFrame:

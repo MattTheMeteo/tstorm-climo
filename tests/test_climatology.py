@@ -62,3 +62,28 @@ def test_load_precipitation_slices_time() -> None:
         "2025-07-15T18", "2025-07-15T18", opener=make_opener(ds)
     )
     assert sliced["time"].values == pd.to_datetime(["2025-07-15T18"])
+
+
+def test_load_precipitation_drops_pre_2018_data() -> None:
+    """Pre-2018 data is sparse; it must not reach the climatology.
+
+    Missing data arrives as NaN, which fails "precipitation > threshold"
+    and so scores as dry. Clamping at MIN_VALID_DATE avoids that.
+    """
+    times = ["2017-06-01T12", "2018-01-01T00", "2025-07-15T18"]
+    ds = fake_precipitation(np.zeros((3, 2, 2)), times)
+    sliced = load_precipitation(
+        "2014-10-01", "2025-07-15T18", opener=make_opener(ds)
+    )
+    assert list(sliced["time"].values) == list(
+        pd.to_datetime(["2018-01-01T00", "2025-07-15T18"])
+    )
+
+
+def test_load_precipitation_is_empty_for_entirely_pre_2018_range() -> None:
+    times = ["2017-06-01T12", "2017-06-01T13", "2017-06-01T14"]
+    ds = fake_precipitation(np.zeros((3, 2, 2)), times)
+    sliced = load_precipitation(
+        "2015-01-01", "2017-12-31", opener=make_opener(ds)
+    )
+    assert sliced.sizes["time"] == 0

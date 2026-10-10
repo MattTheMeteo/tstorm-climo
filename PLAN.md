@@ -13,16 +13,29 @@ precipitation climatologies of North Shore (MA) golf courses.
 | --- | --- | --- |
 | `tstorm_climo/hrrr.py` | `load_precipitation(start, end, dataset_id, opener)` | Opens dynamical.org's `noaa-hrrr-analysis` Icechunk Zarr (hourly analyses, 2014-10-01 → present) via `dynamical-catalog`, slices `precipitation_surface` (hourly-average precipitation rate, kg m-2 s-1) and renames it `precipitation`. Time range via xarray `slice`. `opener` is injectable for tests. |
 
-Key facts we assume (from the catalog docs):
+Key facts we assume (verified against the live archive on 2026-10-10):
 - No accumulated APCP exists in the analysis archive — "rain has fallen"
-  is defined as hourly-average rate > 0 (very sensitive; a threshold may
-  be needed later). `categorical_rain_surface` is available for a
-  stricter rain-vs-drizzle/frozen distinction.
+  is defined as hourly-average rate > threshold (very sensitive).
+  `categorical_rain_surface` is available for a stricter
+  rain-vs-drizzle/frozen distinction.
+- **Analysis window starts 2018-01-01.** The archive is sparse before
+  2018 and has small gaps through 2020, with NaNs where source data is
+  missing. `NaN > threshold` is `False`, so pre-2018 gaps would silently
+  score as *dry* and bias every climatology toward "it never rained".
+  Restricting to 2018-01-01 onward removes the cause rather than
+  patching the symptom. All reads must be bounded at that date; see
+  `MIN_VALID_DATE`.
 - The archive's grid is native HRRR Lambert Conformal Conic (`x`, `y` in
-  meters); lat/lon selection requires a `pyproj` transform, not plain
-  `.sel(lat=...)`.
-- Data availability warnings: sparse source files before 2018, small
-  gaps through 2020; NaNs where source data is missing.
+  metres), but it **also ships 2-D `latitude`/`longitude` coordinate
+  arrays** on that grid (verified: `latitude`, `longitude`, both
+  `(y, x) float32`). This removes the need for a `pyproj` transform
+  entirely — a nearest-neighbour search in NumPy over those arrays is
+  exact enough and dependency-free. `pyproj` is **not** installed and
+  is not needed.
+- `.sel(latitude=..., method="nearest")` does *not* work, but not for
+  the reason assumed: xarray cannot build a `PandasIndex` on a 2-D
+  coordinate. Handle the search ourselves.
+- Grid geometry is regular: `dx = +3000.0 m`, `dy = -3000.0 m` exactly.
 - Dataset chunking: time 2160 h (90 d) chunks, y/x 45 (135 km) — point
   reads are cheap, full-CONUS full-time reads are not.
 
@@ -52,15 +65,32 @@ injected `opener`; no network in the fast test suite.
 
 ### Phase 1: Places on the grid (the mapping core)
 
-1. **`tstorm_climo/grid.py` — lat/lon → grid (x, y) transform.**
-   - Read the CRS embedded in the dynamical.org dataset
-     (`pyproj.CRS.from_user_input(ds.crs)`), build a
-     `Transformer.from_crs("EPSG:4326", crs, always_xy=True)`.
-   - `locate(ds, place) -> (x_index, y_index, distance_km)` using
-     nearest-neighbor selection in projected coordinates.
-   - Validate against the live dataset: every committed place should sit
-     within ~1 grid cell (~3 km) of a node; emit a report otherwise.
-2. **Point/neighborhood extraction.**
+1. ~~**`tstorm_climo/grid.py` — lat/lon → grid transform.**~~ **DONE.**
+   - `Grid.from_dataset(ds)` wraps the archive's 2-D lat/lon arrays;
+     `Grid.locate(lat, lon)` / `locate_places(places)` return a
+     `GridCell(y_index, x_index, grid_lat, grid_lon, distance_km)`.
+   - No `pyproj` dependency (see the corrected data-access notes above).
+   - The search is windowed to the places' bounding box, so cost scales
+     with the region of interest rather than the domain, and batched to
+     bound peak memory.
+   - Longitude differences are scaled by `cos(lat)` so the search
+     minimises ground distance rather than degree distance. Verified
+     against a naive full-grid brute force: the weighting picks the
+     genuinely closer node for 6 of the 110 places, by up to 0.27 km.
+   - Off-grid places raise `PlaceOffGridError` rather than silently
+     snapping to a domain-edge node.
+   - **Validation result (live archive):** all 110 committed places snap
+     within **1.99 km** (mean 1.11 km) of a node, against a geometric
+     ceiling of half a cell diagonal ≈ 2.11 km. Every place falls inside
+     its own cell; coasts and domain edges are not a problem.
+   - **Known resolution limit:** the 110 places occupy only **86 distinct
+     grid nodes**. 42 places (including 13 of the 50 golf courses) share
+     a node with at least one other place, with up to 4 places on a
+     single node. A 3 km analysis grid cannot separate co-located
+     courses, and a 3×3 neighbourhood average does *not* help, since
+     co-located places share the window too. This cannot be engineered
+     away — only handled honestly. See open questions below.
+2. **Point/neighborhood extraction.** *(next)*
    - Per place, extract the hourly precipitation time series at the
      nearest grid point. Also support a 3×3 neighborhood read (fraction
      of wet neighbors) to smooth edge effects — testable via `opener`
@@ -124,9 +154,23 @@ injected `opener`; no network in the fast test suite.
 
 ## Open design questions
 
+- **Co-located places (decided: report, don't hide).** 42 of 110 places
+  share a grid node, so their wet-hour counts will be identical and the
+  leaderboard ranks them arbitrarily. Options considered:
+  1. *(chosen)* Add a `grid_cell` column, rank within cells, and label
+     unresolved pairs explicitly — "these 13 cannot be separated by this
+     data" beats a precise-looking wrong number.
+  2. Naive ranking with a footnote — rejected, because the footnote is
+     the only signal and it is easy to miss.
+  A 3×3 window does not resolve this: co-located places share the
+  window. If finer separation is ever genuinely needed, the only real
+  fix is a finer dataset, not a different sampling of HRRR.
 - **Wet threshold.** Rate > 0 counts even sub-drizzle, which is
   realistic for "the turf was wet" but could overstate "it rained on my
   round." Needs a decision informed by Phase 2's sensitivity study.
+  Leaning to 0.01 kg m-2 s-1 (≈0.01 mm/h) over `> 0`, since the archive
+  stores a floating-point *average* rate and exact zero is not a
+  meaningful boundary.
 - **Event definition.** Minimum duration/separation for counting
   separate rain events (two wet hours with a dry hour between: two
   events or one?). Picked per application rather than baked in forever.

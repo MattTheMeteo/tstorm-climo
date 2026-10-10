@@ -1,9 +1,10 @@
 # PLAN.md
 
-Roadmap and design notes for `tstorm-climo`: a tool for building a
-precipitation and thunderstorm climatology from NWP analysis data, with a
-long-term goal of hosting a marimo notebook or site showing the
-precipitation climatologies of North Shore (MA) golf courses.
+Roadmap and design notes for `tstorm-climo`: a tool for building weather
+climatologies from NWP analysis data and serving them through an interactive,
+server-side marimo app. Users should be able to choose an attraction (for
+example, a golf course, beach, or ski area), a weather variable, and a
+historical period.
 
 ## Current state
 
@@ -61,12 +62,12 @@ already caused one wrong threshold in this project. So:
 | module | what exists | notes |
 | --- | --- | --- |
 | `tstorm_climo/osm.py` | `KIND_TAGS`, `build_query(bbox, kinds)`, `run_query(query)` | Overpass API. Kinds map to OSM tags (`golf_course` → `leisure=golf_course`, `beach` → `natural=beach`). Body sent with a descriptive User-Agent (Overpass 406-rejects the default `requests` UA). Retries with backoff. |
-| `tstorm_climo/places.py` | `Place` (pydantic), `classify`, `from_overpass`, `deduplicate`, `haversine_km`, `to_polars`, `save_csv`, `load_csv` | `Place.place_key` is the stable source-qualified OSM identity (`osm:{type}:{id}`). Ways/relations use polygon centroids, nodes use position. Kind inferred from the element's own tags (Overpass does not say which selector matched). Dedupe collapses same-named places within 1 km (node+way duplicates) while keeping geographically distinct same-named places. |
+| `tstorm_climo/places.py` | `Place` (pydantic), `classify`, `from_overpass`, `deduplicate`, `haversine_km`, `to_polars`, `save_csv`, `load_csv` | `Place.place_key` is the stable source-qualified OSM identity (`osm:{type}:{id}`). Ways/relations currently use Overpass centers and their full geometry is not retained; nodes use their position. Kind inferred from the element's own tags (Overpass does not say which selector matched). Dedupe collapses same-named places within 1 km (node+way duplicates) while keeping geographically distinct same-named places. |
 | `tstorm_climo/climatology.py` | `summarize_grid(precipitation)` | Per hourly analysis step, counts CONUS-wide grid points above a threshold (default 0.05 mm/h). Takes an **already-loaded** dataset — I/O lives in `hrrr.load_precipitation`. Coarse-grained (whole dataset, no spatial subset); a global sanity check, not a per-place result. |
 | `tstorm_climo/extract.py` | `extract_series(places, start, end, grid=, opener=)` | Long-format per-place hourly series (`place_key, time, precipitation_mm_per_hour, valid, y_index, x_index, grid_lat, grid_lon, snap_distance_km, tz_name`). `place_key` is independent of input order; summaries join by key. One contiguous block read, then gather in memory. Slices **before** converting units. Sorted by input place order, then time; the time column resets per place and is not globally sorted. |
 | `tstorm_climo/summarize.py` | `place_summary`, `by_local_month`, `by_local_hour`, `scorecard`, `split_half_reliability` | Per-place climatology in local time. Default threshold 0.05 mm/h, shared with `summarize_grid`. No unit conversion — input is already mm/h. |
 | `tstorm_climo/provenance.py` | `build_metadata`, `write_metadata`, `format_caveats` | JSON sidecar recording archive, date range, threshold, reliability and the CC-BY / ODbL attribution. Makes a published number reproducible and keeps licence obligations in one place. |
-| `tstorm_climo/cli.py` | `rain-report --places/--start/--end/--threshold/--kind/--month/--output`, `summarize --start/--end`, `fetch-places --bbox/--kind/--named-only/--no-dedupe/--output` | argparse subcommands. `rain-report` prints the leaderboard, its reliability figure and caveats, and optionally writes parquet + sidecar. |
+| `tstorm_climo/cli.py` | `rain-report --places/--start/--end/--threshold/--kind/--month/--output`, `summarize --start/--end`, `fetch-places --bbox/--kind/--named-only/--no-dedupe/--output` | argparse subcommands. `rain-report` prints the leaderboard, its reliability figure and caveats, and optionally writes a **derived summary** parquet + sidecar. This is useful for fixed reports, but is not the hourly artifact needed to recalculate arbitrary user-selected periods. |
 
 Committed data:
 - `places_north_shore.csv` — 50 golf courses + 60 named beaches for the
@@ -186,7 +187,7 @@ injected `opener`; no network in the fast test suite.
      stratiform or frontal rather than convective, so the classic
      afternoon-convection peak is muted.
 
-   ### `categorical_rain_surface` compared (item 7, mostly answered)
+    ### `categorical_rain_surface` compared (item 8, mostly answered)
 
    `crain` (0/1, "0=no; 1=yes", `step_type: instant`) was evaluated over
    the same 50 courses × 2018–2026:
@@ -274,66 +275,144 @@ injected `opener`; no network in the fast test suite.
    - The **reliability figure is always printed with the table**, along
      with the caveats and both licence attributions. A leaderboard
      without it is misleading, so it is not optional output.
-   - This is the producer of the artifact a future notebook or web app
-     consumes: compute once, read the parquet, inherit the provenance.
-     It is deliberately *not* a caching layer (that stayed dropped) —
-     parquet-from-CLI is less machinery and is enough for our needs.
+    - This produces a derived summary for fixed reports. It is not the
+      interactive app's source artifact: a summary cannot be re-aggregated
+      correctly for an arbitrary date range. The app needs hourly
+      observations, built separately in Phase 3.
 
-### Phase 2: Event-aware climatology
+### Phase 2: Variable and event definitions
 
-5. **Rain-event definition.** Merge consecutive wet hours into discrete
-   rain events (min duration, min separation), per place. Track event
-   start hour-of-day, duration, and total accumulation where possible.
-6. ~~**Spatial averaging over a course footprint.**~~ **Dropped.** A
-   generic 3×3 window is identical for any two points in the same cell,
+5. **Define supported weather variables.** Keep attraction kind (where)
+   independent from variable (what). For each variable, record its source
+   dataset/field, normalized output unit, conversion, missing-data rules,
+   and summary semantics. Rain uses the shared 0.05 mm/h default threshold;
+   validate the snow field's units and time-step meaning before exposing it
+   as a user choice. Do not assume rain and snow amounts can be summarized
+   identically.
+6. **Rain-event definition.** If event counts are added, merge consecutive
+   wet hours into discrete events (minimum duration/separation), per place.
+   Track event start hour-of-day, duration, and accumulation where the
+   source supports it. Keep these rules as analysis options, not baked into
+   the observation artifact.
+7. ~~**Spatial averaging over a course footprint.**~~ **Dropped for the
+   current point-sample analysis.** A generic 3×3 window is identical for
+   any two points in the same cell,
    so it blurs without separating. A true footprint average (area-weight
    the OSM polygon over covered cells) could separate some co-located
    courses, but needs `pyproj` + polygon-clipping and re-fetching
    geometry — two new dependencies and a schema change to resolve 3
    pairs out of 50 courses. Not worth it. Revisit only if a finer
    dataset becomes available.
-7. **Threshold sensitivity study.** Compare wet fractions across
+8. **Threshold sensitivity study.** Compare wet fractions across
    thresholds (0, 0.1, 0.5, 1 mm/h — see the units note in open
    questions) and against `categorical_rain_surface`, which may be a
-   more honest rain-vs-drizzle boundary than any rate cutoff. Document
-   the recommended default.
+   more honest rain-vs-drizzle boundary than any rate cutoff. Keep the
+   chosen 0.05 mm/h product default explicit, and show reliability so users
+   can see how conclusions change with threshold.
 
-### Phase 3: Scale and memory strategy
+### Phase 3: Offline hourly observation artifacts
 
-8. ~~**Caching/staging layer.**~~ **Dropped.** Measured against the live
-   archive, the premise did not hold: the North Shore block is only
-   **26 × 21 nodes**, and the *entire* 2018–2026 window over that block
-   is **153 MB in ~12 s**, with no cache priming needed. A full-year read
-   is ~19 MB / ~2 s. One contiguous block read, then index in memory,
-   covers every use case we have. No staging layer.
-9. **Adapt to archive format changes.** dynamical.org keeps
-   `analysis` (time-optimized), `analysis-virtual` (map-optimized), plus
-   forecast and 18 h low-latency variants. Confirm which is best for
-   point time series (likely `analysis`, the time-optimized one) and
-   document the choice.
-10. **Attribution and licensing.** The catalog is CC BY 4.0 — make sure
-    published outputs carry the citation ("NOAA HRRR processed by
-    dynamical.org from NOAA Open Data Dissemination archives") plus OSM
-    attribution (ODbL) on any published notebook/site.
+9. **Build hourly artifacts for interactive queries.** Add a CLI/build
+   function that extracts selected places, variables, and date ranges from
+   the archive and writes normalized hourly observations to Parquet. This
+   is a versioned, read-only input dataset for the app—not a runtime cache
+   and not the `rain-report` summary output. Store at least
+   `place_key, time_utc, variable, value, valid`; keep place metadata in a
+   companion versioned artifact. Do not bake a wet threshold into the
+   measurements so the app can apply its selected threshold.
+10. **Partition and describe the artifact.** Start with one region and
+    partition by variable and year if useful for filtered reads. Include a
+    manifest with dataset/source field, normalized units, date coverage,
+    place-catalog version or hash, build time/code version, and attribution.
+    Preserve `place_key` and validity information end-to-end. Report the
+    observed coverage so missing data is never rendered as dry weather.
+    The place-catalog version must identify the exact synchronized place
+    and geometry snapshot used for the build.
+    - **Place catalog refresh is an offline build step.** Query Overpass
+      manually or on a low-frequency schedule, never in response to app
+      interactions. For broad coverage, fetch bounded regions/tiles in
+      batches rather than one nationwide query; merge and deduplicate by
+      `place_key`. Keep unnamed but otherwise valid attractions with a
+      generated display label, or record their exclusion as an explicit
+      curation rule.
+    - **Publish place attributes and geometry as one catalog release.**
+      Keep scalar attributes (`place_key`, OSM type/ID, name, kind,
+      representative point, timezone) in the places table. Store geometry
+      separately, keyed by the same `place_key` (one geometry record per
+      place; multipolygons remain one feature). The current importer only
+      requests centers; fetching and retaining full way/relation geometry
+      is a planned change, not current behavior.
+    - Each release has an immutable version directory containing both
+      tables plus a manifest (retrieval time, query/region coverage, tag
+      mapping, attribution, and checksums). Validate both files and their
+      key coverage before publishing. Update a small `latest` manifest or
+      pointer **only after** the full release is ready; never overwrite the
+      two live files independently. Retain older releases for rollback and
+      provenance even though users see the latest release by default.
+      Local files are sufficient initially; use S3/object storage when the
+      hosted app needs shared durable artifacts.
+11. **Keep archive I/O out of app interactions.** Build or refresh artifacts
+    separately (manual refresh is adequate initially). The app must not
+    call HRRR or Overpass when a user changes a selector. The measured
+    North Shore block remains small; no database or distributed cache is
+    justified. Use Polars lazy scans or load the artifact once, then add
+    caching only if measured app latency warrants it.
+12. **Adapt to archive format changes.** dynamical.org keeps
+    `analysis` (time-optimized), `analysis-virtual` (map-optimized), plus
+    forecast and 18 h low-latency variants. Confirm which is best for
+    point time series and document the choice in the artifact manifest.
+13. **Attribution and licensing.** The catalog is CC BY 4.0 — make sure
+     published outputs carry the citation ("NOAA HRRR processed by
+     dynamical.org from NOAA Open Data Dissemination archives") plus OSM
+     attribution (ODbL) on any published notebook/site.
 
-### Phase 4: Streamlit-like workbook + site
+### Phase 4: Interactive server-side marimo app
 
-11. **marimo notebook** (preferred per repo notes) with:
-    - map of North Shore places colored by wet fraction;
-    - per-place hour-of-day histograms ("summer afternoon deluge risk");
-    - the ranked driest-to-wettest course table (the Chuck leaderboard);
-12. **Publishing.** Host as a static export of the notebook or a small
-    web app; pin the input data (versioned parquet) so published numbers
-    are reproducible.
+14. **Factor a reusable report/query function.** Accept observation data,
+    selected `place_key`/attraction kind, variable, date range, and any
+    supported summary options; return tables and plot-ready data. Keep it
+    independent of marimo and network I/O so the CLI, tests, and app share
+    the same analysis behavior.
+15. **Build the reactive marimo UI.** Provide controls for attraction kind,
+    place, variable, and custom start/end dates bounded by artifact coverage.
+    Resolve the latest complete place-catalog release when the app starts
+    (or reloads it); keep one consistent catalog snapshot for each running
+    app session. Filter the hourly artifact server-side, then call the
+    reusable summary functions. Show coverage, units, source, sampling
+    method, reliability where applicable, and the caveats alongside
+    results. Initial views: map, period totals/frequency, monthly and
+    local-hour climatology, and comparisons across selected places.
+16. **Host as a server-side app.** Run a small persistent marimo process
+    with read-only access to versioned artifacts. Reactive controls may
+    recompute summaries, but must not trigger HRRR downloads or Overpass
+    queries. A static export is for fixed reports only. Start with one app
+    process; add a separate API, job queue, or multi-user caching only if
+    actual concurrency or calculation time requires it.
+17. **Publish reproducibly while serving the latest catalog.** Display the
+    exact catalog and observation-artifact versions resolved by the app,
+    with their manifest/provenance. When a new catalog release is published,
+    advance `latest` after validation and reload/restart the app cleanly;
+    do not mix catalog files within a session. Keep previous releases for
+    rollback and reproducibility, and keep OSM and HRRR attribution visible.
 
 ### Phase 5: Generalizations
 
-13. **More kinds.** If golf clubs want more granular measures we can add
-    or adjust OSM kinds (debatable: `water_park`, `swimming_pool`,
-    `pitch`). Keep `KIND_TAGS` as the single source of truth.
-14. **Beyond the North Shore.** The pipeline is already bbox-driven;
-    keep the CLI able to take any bbox kind list and place CSV so this
-    works for other regions/datasets (catalog has more than HRRR).
+18. **More attraction kinds and regions.** Integrate and QA the existing
+    golf-course and beach catalogs in the app; add ski-area catalogs and
+    check OSM tag coverage. Preserve geometry/source identity when possible.
+    Treat representative-point sampling as an explicit initial method;
+    large or elongated attractions may need footprint summaries. Continue
+    to support bbox-driven place catalogs and show region coverage.
+19. **Use retained geometry when justified.** Once geometry is available,
+    draw attraction outlines and assess grid-cell/footprint summaries for
+    large beaches and ski areas. Keep the representative point for simple
+    lookup and fallback. Evaluate the benefit against HRRR's 3 km resolution
+    before making footprint aggregation the default.
+20. **More weather variables and sources.** Add a variable only after its
+    source field, units, temporal meaning, and summary interpretation are
+    validated. Keep the user-facing variable registry separate from OSM
+    attraction kinds. Add other datasets only when a concrete coverage or
+    resolution need justifies them.
 
 ## Open design questions
 

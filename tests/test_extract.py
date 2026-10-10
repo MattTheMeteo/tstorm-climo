@@ -55,9 +55,16 @@ def make_opener(rate: np.ndarray, times: list[str]):
     return opener
 
 
-def a_place(lat: float, lon: float, name: str = "Course") -> Place:
+def a_place(
+    lat: float, lon: float, name: str = "Course", osm_id: int = 1
+) -> Place:
     return Place(
-        osm_type="way", osm_id=1, name=name, kind="golf_course", lat=lat, lon=lon
+        osm_type="way",
+        osm_id=osm_id,
+        name=name,
+        kind="golf_course",
+        lat=lat,
+        lon=lon,
     )
 
 
@@ -79,27 +86,41 @@ def test_empty_places_returns_empty_frame_with_schema() -> None:
     assert out.schema == SCHEMA
 
 
+def test_duplicate_place_keys_are_rejected_before_opening_data() -> None:
+    place = one_place()
+    with pytest.raises(ValueError, match="unique place_key"):
+        extract_series(
+            [place, place],
+            "2025-07-01",
+            "2025-08-01",
+            opener=lambda *_args, **_kwargs: pytest.fail("should not open data"),
+        )
+
+
 def test_long_format_is_one_row_per_place_hour() -> None:
     out = extract_series(
         [one_place()], "2025-07-01", "2025-08-01", opener=flat_opener(0.0, 3)
     )
     assert out.height == 3
-    assert out["place_id"].n_unique() == 1
+    assert out["place_key"].unique().to_list() == ["osm:way:1"]
     assert out[TIME_COLUMN].n_unique() == 3
 
 
 def test_multiple_places_each_get_every_hour() -> None:
     lat, lon = make_coords()
     places = [
-        a_place(float(lat[0, 0]), float(lon[0, 0]), "A"),
-        a_place(float(lat[2, 3]), float(lon[2, 3]), "B"),
+        a_place(float(lat[0, 0]), float(lon[0, 0]), "A", osm_id=1),
+        a_place(float(lat[2, 3]), float(lon[2, 3]), "B", osm_id=2),
     ]
     out = extract_series(
         places, "2025-07-01", "2025-08-01", opener=flat_opener(0.0, 4)
     )
     assert out.height == 8
-    assert sorted(out["place_id"].unique().to_list()) == [0, 1]
-    assert out.group_by("place_id").len()["len"].to_list() == [4, 4]
+    assert sorted(out["place_key"].unique().to_list()) == [
+        "osm:way:1",
+        "osm:way:2",
+    ]
+    assert out.group_by("place_key").len()["len"].to_list() == [4, 4]
 
 
 def test_rate_is_converted_to_mm_per_hour() -> None:
@@ -116,23 +137,23 @@ def test_values_are_read_from_the_right_grid_node() -> None:
     rate[0, 2, 3] = 1e-5
     lat, lon = make_coords()
     places = [
-        a_place(float(lat[0, 0]), float(lon[0, 0]), "A"),
-        a_place(float(lat[2, 3]), float(lon[2, 3]), "B"),
+        a_place(float(lat[0, 0]), float(lon[0, 0]), "A", osm_id=1),
+        a_place(float(lat[2, 3]), float(lon[2, 3]), "B", osm_id=2),
     ]
     out = extract_series(
         places, "2025-07-01", "2025-08-01", opener=make_opener(rate, ["2025-07-15T00"])
     )
-    by_id = out.group_by("place_id").agg(pl.col(RATE_COLUMN).first())
+    by_id = out.group_by("place_key").agg(pl.col(RATE_COLUMN).first())
     rates = dict(
         zip(
-            by_id["place_id"].to_list(),
+            by_id["place_key"].to_list(),
             by_id[RATE_COLUMN].to_list(),
             strict=True,
         )
     )
-    assert rates[0] == pytest.approx(0.0)
-    assert rates[1] == pytest.approx(0.036)
-    assert set(rates) == {0, 1}
+    assert rates["osm:way:1"] == pytest.approx(0.0)
+    assert rates["osm:way:2"] == pytest.approx(0.036)
+    assert set(rates) == {"osm:way:1", "osm:way:2"}
 
 
 def test_nan_is_flagged_invalid_not_treated_as_dry() -> None:
@@ -219,8 +240,8 @@ def test_off_grid_place_raises() -> None:
 def test_output_is_sorted_by_place_then_time() -> None:
     lat, lon = make_coords()
     places = [
-        a_place(float(lat[2, 3]), float(lon[2, 3]), "B"),
-        a_place(float(lat[0, 0]), float(lon[0, 0]), "A"),
+        a_place(float(lat[2, 3]), float(lon[2, 3]), "B", osm_id=2),
+        a_place(float(lat[0, 0]), float(lon[0, 0]), "A", osm_id=1),
     ]
     times = [f"2025-07-15T{h:02d}" for h in range(3)]
     out = extract_series(
@@ -229,12 +250,19 @@ def test_output_is_sorted_by_place_then_time() -> None:
         "2025-08-01",
         opener=make_opener(np.zeros((3, N_Y, N_X)), times),
     )
-    assert out["place_id"].to_list() == [0, 0, 0, 1, 1, 1]
+    assert out["place_key"].to_list() == [
+        "osm:way:2",
+        "osm:way:2",
+        "osm:way:2",
+        "osm:way:1",
+        "osm:way:1",
+        "osm:way:1",
+    ]
     # Long format: sorted by place, then by time *within* each place.
     # The time column itself resets per place, so it is not globally
     # sorted and must not be assumed to be.
-    for pid in (0, 1):
-        times = out.filter(pl.col("place_id") == pid)[TIME_COLUMN]
+    for place_key in ("osm:way:1", "osm:way:2"):
+        times = out.filter(pl.col("place_key") == place_key)[TIME_COLUMN]
         assert times.is_sorted()
 
 
@@ -242,19 +270,19 @@ def test_colocated_places_get_identical_series() -> None:
     """The documented resolution limit: same cell, same numbers."""
     lat, lon = make_coords()
     places = [
-        a_place(float(lat[0, 0]), float(lon[0, 0]), "A"),
-        a_place(float(lat[0, 0]) + 0.001, float(lon[0, 0]), "B"),
+        a_place(float(lat[0, 0]), float(lon[0, 0]), "A", osm_id=1),
+        a_place(float(lat[0, 0]) + 0.001, float(lon[0, 0]), "B", osm_id=2),
     ]
     times = ["2025-07-15T00", "2025-07-15T01"]
     rate = np.full((2, N_Y, N_X), 2e-5)
     out = extract_series(
         places, "2025-07-01", "2025-08-01", opener=make_opener(rate, times)
     )
-    by_id = out.group_by("place_id").agg(pl.col(RATE_COLUMN))
+    by_key = out.group_by("place_key").agg(pl.col(RATE_COLUMN))
     series = dict(
-        zip(by_id["place_id"].to_list(), by_id[RATE_COLUMN].to_list(), strict=True)
+        zip(by_key["place_key"].to_list(), by_key[RATE_COLUMN].to_list(), strict=True)
     )
-    assert series[0] == series[1]
+    assert series["osm:way:1"] == series["osm:way:2"]
     assert out["y_index"].n_unique() == 1
     assert out["x_index"].n_unique() == 1
 
@@ -263,8 +291,8 @@ def test_timezone_is_carried_through() -> None:
     """Each row carries the place's zone for the summary layer."""
     lat, lon = make_coords()
     places = [
-        a_place(float(lat[0, 0]), float(lon[0, 0]), "A"),
-        a_place(float(lat[2, 3]), float(lon[2, 3]), "B"),
+        a_place(float(lat[0, 0]), float(lon[0, 0]), "A", osm_id=1),
+        a_place(float(lat[2, 3]), float(lon[2, 3]), "B", osm_id=2),
     ]
     places[0] = places[0].model_copy(
         update={"timezone": "America/New_York"}
@@ -275,11 +303,11 @@ def test_timezone_is_carried_through() -> None:
     out = extract_series(
         places, "2025-07-01", "2025-08-01", opener=flat_opener(0.0, 2)
     )
-    zones = out.group_by("place_id").agg(pl.col("tz_name").first())
+    zones = out.group_by("place_key").agg(pl.col("tz_name").first())
     # Keyed lookup, not positional: group_by row order is not guaranteed.
     assert dict(
-        zip(zones["place_id"].to_list(), zones["tz_name"].to_list(), strict=True)
-    ) == {0: "America/New_York", 1: "America/Denver"}
+        zip(zones["place_key"].to_list(), zones["tz_name"].to_list(), strict=True)
+    ) == {"osm:way:1": "America/New_York", "osm:way:2": "America/Denver"}
 
 
 def test_mixed_timezones_can_be_partitioned_and_converted() -> None:

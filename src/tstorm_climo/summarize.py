@@ -29,12 +29,7 @@ import polars as pl
 
 from tstorm_climo.extract import RATE_COLUMN, TIME_COLUMN, VALID_COLUMN
 from tstorm_climo.places import UTC_TIMEZONE, Place
-
-# Default "it actually rained on the course" threshold, in mm/h. The
-# archive's `> 0` marks drizzle and any floating-point residue; 0.5 mm/h
-# is a defensible "measurable rain" floor. Phase 2's sensitivity study
-# is meant to confirm or revise this.
-DEFAULT_WET_THRESHOLD_MM_PER_HOUR = 0.5
+from tstorm_climo.thresholds import DEFAULT_WET_THRESHOLD_MM_PER_HOUR
 
 
 def add_local_time(series: pl.DataFrame) -> pl.DataFrame:
@@ -88,7 +83,8 @@ def place_summary(
 
     Args:
         series: Long-format extraction output.
-        places: The places, in the same order as ``series.place_id``.
+        places: Place records corresponding to the series' ``place_key``
+            values. Their order does not matter.
         threshold_mm_per_hour: Rate above which an hour counts as wet.
 
     Returns:
@@ -101,17 +97,17 @@ def place_summary(
     keyed = _with_places(series, places)
     wet = wet_rows(keyed, threshold_mm_per_hour)
 
-    totals = keyed.group_by("place_id").agg(
+    totals = keyed.group_by("place_key").agg(
         steps=pl.len(), invalid_hours=pl.col(VALID_COLUMN).not_().sum()
     )
-    stats = wet.group_by("place_id").agg(
+    stats = wet.group_by("place_key").agg(
         valid_hours=pl.len(),
         wet_hours=pl.col("wet").sum(),
         rain_mm=pl.col(RATE_COLUMN).sum(),
     )
 
     out = (
-        keyed.group_by("place_id")
+        keyed.group_by("place_key")
         .agg(
             pl.col("name").first(),
             pl.col("kind").first(),
@@ -120,8 +116,8 @@ def place_summary(
             pl.col("x_index").first(),
             pl.col("snap_distance_km").first(),
         )
-        .join(totals, on="place_id")
-        .join(stats, on="place_id")
+        .join(totals, on="place_key")
+        .join(stats, on="place_key")
         .with_columns(
             wet_fraction=pl.col("wet_hours") / pl.col("valid_hours"),
             coverage=pl.col("valid_hours") / pl.col("steps"),
@@ -147,7 +143,7 @@ def by_local_month(
     wet = wet_rows(_with_places(series, places), threshold_mm_per_hour)
     local = add_local_time(wet)
     return (
-        local.group_by("place_id", "local_month")
+        local.group_by("place_key", "local_month")
         .agg(
             name=pl.col("name").first(),
             kind=pl.col("kind").first(),
@@ -158,7 +154,7 @@ def by_local_month(
         .with_columns(
             wet_fraction=pl.col("wet_hours") / pl.col("valid_hours")
         )
-        .sort("place_id", "local_month")
+        .sort("place_key", "local_month")
     )
 
 
@@ -179,7 +175,7 @@ def by_local_hour(
     wet = wet_rows(_with_places(series, places), threshold_mm_per_hour)
     local = add_local_time(wet)
     return (
-        local.group_by("place_id", "local_hour")
+        local.group_by("place_key", "local_hour")
         .agg(
             name=pl.col("name").first(),
             kind=pl.col("kind").first(),
@@ -190,7 +186,7 @@ def by_local_hour(
         .with_columns(
             wet_fraction=pl.col("wet_hours") / pl.col("hours_observed")
         )
-        .sort("place_id", "local_hour")
+        .sort("place_key", "local_hour")
     )
 
 
@@ -253,7 +249,7 @@ def split_half_reliability(
     if wet.height == 0:
         return float("nan")
 
-    n_places = wet["place_id"].n_unique()
+    n_places = wet["place_key"].n_unique()
     if n_places < 2:
         return float("nan")
 
@@ -265,34 +261,50 @@ def split_half_reliability(
     right = _wet_fractions(wet.filter(pl.col(TIME_COLUMN) > midpoint))
     if left is None or right is None:
         return float("nan")
-    return float(np.corrcoef(left, right)[0, 1])
+    aligned = left.join(right, on="place_key", how="inner", suffix="_right")
+    if (
+        aligned.height < 2
+        or aligned["wet_fraction"].n_unique() < 2
+        or aligned["wet_fraction_right"].n_unique() < 2
+    ):
+        return float("nan")
+    return float(
+        np.corrcoef(
+            aligned["wet_fraction"].to_numpy(),
+            aligned["wet_fraction_right"].to_numpy(),
+        )[0, 1]
+    )
 
 
-def _wet_fractions(part: pl.DataFrame) -> list[float] | None:
-    """Per-place wet fraction for one time block, ordered by place_id."""
-    counts = part.group_by("place_id").agg(
+def _wet_fractions(part: pl.DataFrame) -> pl.DataFrame | None:
+    """Per-place wet fractions for one time block, keyed by place_key."""
+    counts = part.group_by("place_key").agg(
         wet=pl.col("wet").sum(), total=pl.len()
-    ).sort("place_id")
-    fractions = counts["wet"] / counts["total"]
-    values = fractions.to_list()
-    if len(set(values)) < 2:
+    ).with_columns(wet_fraction=pl.col("wet") / pl.col("total"))
+    if counts["wet_fraction"].n_unique() < 2:
         return None
-    return [float(v) for v in values]
+    return counts.select("place_key", "wet_fraction")
 
 
 def _with_places(
     series: pl.DataFrame, places: Sequence[Place]
 ) -> pl.DataFrame:
-    """Attach name/kind/timezone to each row, keyed by ``place_id``."""
+    """Attach place metadata to each row, keyed by stable ``place_key``."""
     table = pl.DataFrame(
         {
-            "place_id": pl.Series(range(len(places)), dtype=pl.UInt32),
+            "place_key": pl.Series(
+                [place.place_key for place in places], dtype=pl.String
+            ),
             "name": [p.display_name for p in places],
             "kind": [p.kind for p in places],
             "timezone": [p.timezone for p in places],
         }
     )
-    # Join unconditionally, even on an empty series: a left join keeps
-    # every row, so an empty input stays empty and still carries the
-    # name/kind columns the aggregations below reference.
-    return series.join(table, on="place_id", how="left")
+    if table["place_key"].n_unique() != len(places):
+        raise ValueError("places must have unique place_key values")
+    # Join unconditionally, even on an empty series, so output schema and
+    # metadata behavior do not depend on whether any rows were extracted.
+    joined = series.join(table, on="place_key", how="left")
+    if joined.height and joined["name"].null_count():
+        raise ValueError("series contains place_key values missing from places")
+    return joined

@@ -60,16 +60,18 @@ def places_csv(tmp_path: Path) -> str:
     return str(path)
 
 
-def make_series(n_hours: int = 48) -> pl.DataFrame:
+def make_series(n_hours: int = 48, places=PLACES) -> pl.DataFrame:
     """A long-format series: place 0 dry, place 1 wet, place 2 medium."""
     from datetime import datetime, timedelta
 
     base = datetime(2025, 7, 15, tzinfo=UTC)
     patterns = {0: 0.0, 1: 1.0, 2: 0.5}
     rows: dict[str, list] = {k: [] for k in SCHEMA}
-    for index, pattern in patterns.items():
+    for place in places:
+        index = PLACES.index(place)
+        pattern = patterns[index]
         for hour in range(n_hours):
-            rows["place_id"].append(index)
+            rows["place_key"].append(place.place_key)
             rows["time"].append(base + timedelta(hours=hour))
             rows["precipitation_mm_per_hour"].append(pattern)
             rows["valid"].append(True)
@@ -89,7 +91,7 @@ def fake_extract(monkeypatch):
 
     monkeypatch.setattr(
         cli_module, "extract_series",
-        lambda places, start, end, **kwargs: make_series(),
+        lambda places, start, end, **kwargs: make_series(places=places),
     )
 
 
@@ -112,11 +114,11 @@ def test_rain_report_parses_arguments() -> None:
     assert args.month == 6
 
 
-def test_rain_report_defaults_to_half_mm_per_hour() -> None:
+def test_rain_report_defaults_to_point_zero_five_mm_per_hour() -> None:
     args = build_parser().parse_args(
         ["rain-report", "--places", "p.csv", "--start", "a", "--end", "b"]
     )
-    assert args.threshold == 0.5
+    assert args.threshold == 0.05
 
 
 def test_rain_report_requires_places_and_dates() -> None:
@@ -174,8 +176,9 @@ def test_rain_report_writes_parquet_and_sidecar(
     assert path.exists()
     table = pl.read_parquet(path)
     assert table.height == 3
+    assert "place_key" in table.columns
     metadata = json.loads(Path(f"{path}.meta.json").read_text())
-    assert metadata["threshold_mm_per_hour"] == 0.5
+    assert metadata["threshold_mm_per_hour"] == 0.05
     assert metadata["place_count"] == 3
     assert "ranking_reliability" in metadata
 

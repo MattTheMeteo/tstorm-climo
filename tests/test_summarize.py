@@ -57,7 +57,7 @@ def make_series(
     zone_list = zones or ["America/New_York"] * n_places
 
     rows = {
-        "place_id": [],
+        "place_key": [],
         TIME_COLUMN: [],
         RATE_COLUMN: [],
         VALID_COLUMN: [],
@@ -69,8 +69,9 @@ def make_series(
         "tz_name": [],
     }
     for p in range(n_places):
+        key = place(p).place_key
         for h in range(n_hours):
-            rows["place_id"].append(p)
+            rows["place_key"].append(key)
             rows[TIME_COLUMN].append(times[h])
             rows[RATE_COLUMN].append(rates[p][h])
             rows[VALID_COLUMN].append(
@@ -85,7 +86,7 @@ def make_series(
     return pl.DataFrame(
         rows,
         schema={
-            "place_id": pl.UInt32,
+            "place_key": pl.String,
             TIME_COLUMN: pl.Datetime("us", "UTC"),
             RATE_COLUMN: pl.Float64,
             VALID_COLUMN: pl.Boolean,
@@ -112,8 +113,14 @@ def test_wet_threshold_is_exclusive() -> None:
     assert wet["wet"].to_list() == [False, True]
 
 
-def test_default_threshold_is_half_mm_per_hour() -> None:
-    assert DEFAULT_WET_THRESHOLD_MM_PER_HOUR == 0.5
+def test_default_threshold_is_point_zero_five_mm_per_hour() -> None:
+    assert DEFAULT_WET_THRESHOLD_MM_PER_HOUR == 0.05
+
+
+def test_place_summary_default_counts_light_rain() -> None:
+    series = make_series([[0.0, 0.1]])
+    out = place_summary(series, [place(0)])
+    assert out["wet_hours"].item() == 1
 
 
 def test_place_summary_counts_wet_hours_and_fraction() -> None:
@@ -182,6 +189,19 @@ def test_distinct_nodes_are_not_tied() -> None:
     assert out["cell_places"].to_list() == [1, 1]
 
 
+def test_summary_joins_places_independently_of_input_order() -> None:
+    series = make_series([[0.0, 0.0], [1.0, 1.0]])
+    out = place_summary(series, [place(1), place(0)])
+    by_name = dict(
+        zip(out["name"].to_list(), out["wet_hours"].to_list(), strict=True)
+    )
+    assert by_name == {"Course 0": 0, "Course 1": 2}
+    assert set(out["place_key"].to_list()) == {
+        place(0).place_key,
+        place(1).place_key,
+    }
+
+
 def test_identical_wet_fraction_shares_a_dense_rank() -> None:
     series = make_series([[1.0, 0.0], [1.0, 0.0]])
     out = place_summary(series, [place(0), place(1)])
@@ -203,8 +223,12 @@ def test_local_time_handles_mixed_zones() -> None:
         zones=["America/New_York", "America/Los_Angeles"],
     )
     local = add_local_time(series)
-    ny = local.filter(pl.col("place_id") == 0)["local_hour"].to_list()[0]
-    la = local.filter(pl.col("place_id") == 1)["local_hour"].to_list()[0]
+    ny = local.filter(pl.col("place_key") == place(0).place_key)[
+        "local_hour"
+    ].to_list()[0]
+    la = local.filter(pl.col("place_key") == place(1).place_key)[
+        "local_hour"
+    ].to_list()[0]
     assert ny == 20  # UTC-4
     assert la == 17  # UTC-7
 
@@ -282,7 +306,7 @@ def test_scorecard_can_filter_to_one_month() -> None:
 
 
 def test_empty_series_produces_empty_summary() -> None:
-    series = make_series([[0.0] * 2]).filter(pl.col("place_id") > 99)
+    series = make_series([[0.0] * 2]).filter(pl.lit(False))
     out = place_summary(series, [place(0)])
     assert out.height == 0
 
@@ -290,6 +314,21 @@ def test_split_half_reliability_high_for_a_real_signal() -> None:
     """Places that genuinely differ must reproduce across halves."""
     rates = [[1.0] * 12] * 5 + [[0.0] * 12] * 5
     series = make_series(rates)
+    assert split_half_reliability(series) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_split_half_reliability_aligns_places_by_key() -> None:
+    """A place missing from one half must not shift vector alignment."""
+    series = make_series(
+        [[0.0] * 4, [1.0] * 4, [1.0] * 4], start_hour=0
+    )
+    midpoint = series[TIME_COLUMN].median()
+    series = series.filter(
+        ~(
+            (pl.col("place_key") == place(1).place_key)
+            & (pl.col(TIME_COLUMN) > midpoint)
+        )
+    )
     assert split_half_reliability(series) == pytest.approx(1.0, abs=1e-9)
 
 

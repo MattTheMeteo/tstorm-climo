@@ -8,7 +8,7 @@ from pathlib import Path
 
 import polars as pl
 
-from tstorm_climo.climatology import summarize
+from tstorm_climo.climatology import summarize_grid
 from tstorm_climo.extract import extract_series
 from tstorm_climo.hrrr import load_precipitation
 from tstorm_climo.osm import KIND_TAGS, build_query, run_query
@@ -150,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "summarize":
         precipitation = load_precipitation(args.start, args.end)
-        events = summarize(precipitation)
+        events = summarize_grid(precipitation)
         for time, count in events.items():
             print(f"{time}: {count} grid points with precipitation")
         return 0

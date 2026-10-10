@@ -6,14 +6,10 @@ import numpy as np
 import xarray as xr
 
 from tstorm_climo.hrrr import PRECIPITATION_MM_PER_HOUR
-
-# Default wet threshold, in mm/h. Sits above the archive's numerical
-# dust. Higher thresholds rank places far more reliably (see
-# `summarize.split_half_reliability`).
-DEFAULT_WET_THRESHOLD_MM_PER_HOUR = 0.05
+from tstorm_climo.thresholds import DEFAULT_WET_THRESHOLD_MM_PER_HOUR
 
 
-def summarize(
+def summarize_grid(
     precipitation: xr.Dataset,
     *,
     threshold_mm_per_hour: float = DEFAULT_WET_THRESHOLD_MM_PER_HOUR,

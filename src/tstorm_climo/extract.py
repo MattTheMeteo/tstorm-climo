@@ -46,7 +46,7 @@ RATE_COLUMN = PRECIPITATION_MM_PER_HOUR
 VALID_COLUMN = "valid"
 
 SCHEMA = {
-    "place_id": pl.UInt32,
+    "place_key": pl.String,
     TIME_COLUMN: pl.Datetime("us", "UTC"),
     RATE_COLUMN: pl.Float64,
     VALID_COLUMN: pl.Boolean,
@@ -90,6 +90,9 @@ def extract_series(
     """
     if not places:
         return pl.DataFrame(schema=SCHEMA)
+    place_keys = [place.place_key for place in places]
+    if len(set(place_keys)) != len(place_keys):
+        raise ValueError("places must have unique place_key values")
 
     ds = open_analysis(opener=opener)
     active_grid = grid if grid is not None else Grid.from_dataset(ds)
@@ -127,9 +130,11 @@ def _to_frame(
     n_places = len(places)
     n_times = times.size
 
-    # Repeat each place's identity across its hours, and each hour
-    # across every place.
-    place_ids = np.repeat(np.arange(n_places, dtype=np.uint32), n_times)
+    # Repeat each stable place key across its hours, and each hour across
+    # every place.
+    place_keys = np.repeat(
+        np.array([place.place_key for place in places], dtype=object), n_times
+    )
     frame_times = np.tile(times, n_places)
     rates = mm_per_hour.T.reshape(-1)
     valid = np.isfinite(rates)
@@ -149,7 +154,7 @@ def _to_frame(
 
     return pl.DataFrame(
         {
-            "place_id": pl.Series(place_ids, dtype=pl.UInt32),
+            "place_key": pl.Series(place_keys, dtype=pl.String),
             TIME_COLUMN: pl.Series(frame_times).cast(SCHEMA[TIME_COLUMN]),
             RATE_COLUMN: pl.Series(
                 np.where(valid, rates, np.nan), dtype=pl.Float64

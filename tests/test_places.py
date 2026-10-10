@@ -42,6 +42,16 @@ def test_from_overpass_way_uses_center() -> None:
     assert place.kind == "golf_course"
     assert place.lat == pytest.approx(42.5849407)
     assert place.lon == pytest.approx(-70.7617890)
+    assert place.place_key == "osm:way:29689626"
+
+
+def test_place_key_includes_osm_element_type() -> None:
+    way = Place(
+        osm_type="way", osm_id=1, name="A", kind="beach", lat=42.0, lon=-70.9
+    )
+    relation = way.model_copy(update={"osm_type": "relation"})
+    assert way.place_key == "osm:way:1"
+    assert relation.place_key == "osm:relation:1"
 
 
 def test_from_overpass_node_uses_latlon() -> None:

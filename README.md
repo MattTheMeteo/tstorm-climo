@@ -55,7 +55,7 @@ uv run tstorm-climo rain-report \
 ```
 
 Useful flags: `--month 6` restricts to one calendar month in local time,
-`--threshold` sets the wet rate in mm/h (default 0.5), and `--output
+`--threshold` sets the wet rate in mm/h (default 0.05), and `--output
 report.parquet` writes the table with a `.meta.json` sidecar recording
 the archive, date range, threshold, reliability figure, and the CC-BY /
 ODbL attribution — so a notebook or web app can reuse the artifact

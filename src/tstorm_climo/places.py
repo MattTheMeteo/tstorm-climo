@@ -25,6 +25,7 @@ class Place(BaseModel):
         kind: Place kind, e.g. ``golf_course`` or ``beach``.
         lat: Latitude in decimal degrees (WGS84).
         lon: Longitude in decimal degrees (WGS84).
+        place_key: Derived stable identity, qualified by OSM element type.
         timezone: IANA timezone name, e.g. ``America/New_York``.
             Looked up from the coordinates when the place is built, and
             carried through the places CSV. Local-time questions (what
@@ -43,6 +44,11 @@ class Place(BaseModel):
     def display_name(self) -> str:
         """A human-friendly label for reports and plots."""
         return self.name or f"{self.kind} {self.osm_type}/{self.osm_id}"
+
+    @property
+    def place_key(self) -> str:
+        """A stable, source-qualified identity for this OSM feature."""
+        return f"osm:{self.osm_type}:{self.osm_id}"
 
 
 def classify(tags: dict[str, str], kinds: list[str]) -> str | None:

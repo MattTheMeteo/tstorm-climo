@@ -26,6 +26,22 @@ type Opener = Callable[..., xr.Dataset]
 _open: Opener = dynamical_catalog.open
 
 
+def open_analysis(
+    *,
+    dataset_id: str = HRRR_ANALYSIS_DATASET_ID,
+    opener: Opener | None = None,
+) -> xr.Dataset:
+    """Open the raw analysis dataset, including its lat/lon coordinates.
+
+    Use this when the 2-D ``latitude``/``longitude`` arrays are needed
+    (to build a :class:`~tstorm_climo.grid.Grid`); otherwise prefer
+    :func:`load_precipitation`, which slices time and renames the
+    variable.
+    """
+    open_fn = opener or _open
+    return open_fn(dataset_id, chunks=None)
+
+
 def load_precipitation(
     start: str,
     end: str,
@@ -46,7 +62,8 @@ def load_precipitation(
         Dataset with a ``precipitation`` variable (renamed from the
         native ``precipitation_surface``) over ``time × y × x``.
     """
-    open_fn = opener or _open
-    da = open_fn(dataset_id, chunks=None)[PRECIPITATION_VARIABLE]
+    da = open_analysis(dataset_id=dataset_id, opener=opener)[
+        PRECIPITATION_VARIABLE
+    ]
     da = da.sel(time=slice(max(start, MIN_VALID_DATE), end))
     return da.to_dataset(name="precipitation")

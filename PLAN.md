@@ -103,7 +103,7 @@ injected `opener`; no network in the fast test suite.
      costs 9× the reads and does not separate co-located places, since
      they share the window too. It would only blur the grid, not sharpen
      the answer.
-2. **Point/neighborhood extraction.** *(next)*
+2. ~~**Point/neighborhood extraction.**~~ **DONE** (`tstorm_climo/extract.py`).
    - Source field: **`precipitation_surface`** (GRIB short name `prate`),
      units kg m-2 s-1, "average precipitation rate since the previous
      forecast step". It is a **rate**, not an accumulation — the archive
@@ -112,6 +112,18 @@ injected `opener`; no network in the fast test suite.
      (`tsrate`, m s-1 of snow **depth**, ~10× density difference);
      `composite_reflectivity` (dBZ, the independent radar check);
      `precipitable_water_atmosphere` (moisture, not precipitation).
+   - **Long format**: one row per (place, hour), columns
+     `place_id, time, precipitation_mm_per_hour, valid, y_index,
+     x_index, grid_lat, grid_lon, snap_distance_km`. Sorted by place
+     then time; the time column resets per place and is *not* globally
+     sorted.
+   - **Rates converted to mm/h at the boundary** (×3600), so the
+     kg m-2 s-1 unit never reaches the output.
+   - **`valid` flag** carried explicitly: 99.70% valid over 2018–2026
+     for the golf courses; the remaining 0.30% (10,400 rows) are
+     archive gaps, not zero rain.
+   - No threshold applied here — that belongs to the summary layer.
+   - Measured: 50 courses × 8 years = 3.5 M rows in **14 s**.
    - Per place, extract the hourly precipitation time series at the
      nearest grid point. Single-point only: the 3×3 neighborhood was
      considered and rejected (see the note in step 1 above).
@@ -119,14 +131,16 @@ injected `opener`; no network in the fast test suite.
      memory, rather than issuing a scattered read per place (the archive
      chunks y/x at 135 km, so point reads are cheap, scattered reads
      are not).
-3. **Per-place climatology summary.**
-   - `wet = precipitation > threshold`, with the threshold given in
-     **mm/h** and converted internally (see the units note above).
-   - Steps where the archive is NaN must be **excluded, not counted as
-     dry**. Measured: 6.5% of pre-2018 steps and 1.2% of 2018–2019
-     steps are NaN over the North Shore; 2020 onward is effectively
-     clean (1 step in 2020, none after). Carrying a `valid` flag
-     through the extraction is the way to make this explicit.
+3. **Per-place climatology summary.** *(next)*
+   - `wet = precipitation_mm_per_hour > threshold`, threshold given in
+     **mm/h**. Filter on `valid` so archive gaps are excluded rather
+     than counted as dry.
+   - Measured June 2024 (720 h/course): `> 0` marks 11.6% of hours,
+     `> 0.1` ≈ 44%, `> 0.5` ≈ 22%, `> 1.0` ≈ 13%. Notably there is
+     **no numerical dust** — every wet hour is a real `> 0` value, so
+     the threshold choice is about physical meaning, not float noise.
+   - Times are UTC; golf is a **local-time** question, so hour-of-day
+     slicing must convert (EDT = UTC−4). Decide Eastern vs solar time.
    - Output a polars table: place × (wet count, wet fraction, rain
      hours) sliced by hour-of-day and month; the "Chuck scorecard" is a
      filter on this table.

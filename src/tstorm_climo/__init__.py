@@ -6,16 +6,16 @@ via the dynamical-catalog package.
 
 from __future__ import annotations
 
-from tstorm_climo.climatology import Climatology
+from tstorm_climo.climatology import summarize
 from tstorm_climo.grid import Grid, GridCell, PlaceOffGridError
 from tstorm_climo.hrrr import load_precipitation
 
 __all__ = [
-    "Climatology",
     "Grid",
     "GridCell",
     "PlaceOffGridError",
     "load_precipitation",
+    "summarize",
 ]
 
 

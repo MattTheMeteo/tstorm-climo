@@ -11,7 +11,7 @@ precipitation climatologies of North Shore (MA) golf courses.
 
 | module | what exists | notes |
 | --- | --- | --- |
-| `tstorm_climo/hrrr.py` | `load_precipitation(start, end, dataset_id, opener)` | Opens dynamical.org's `noaa-hrrr-analysis` Icechunk Zarr (hourly analyses, 2014-10-01 → present) via `dynamical-catalog`, slices `precipitation_surface` (hourly-average precipitation rate, kg m-2 s-1) and renames it `precipitation`. Time range via xarray `slice`. `opener` is injectable for tests. |
+| `tstorm_climo/hrrr.py` | `load_precipitation(start, end, dataset_id, opener)`, `to_mm_per_hour(da)`, `open_analysis(opener)` | Opens dynamical.org's `noaa-hrrr-analysis` Icechunk Zarr (hourly analyses, 2014-10-01 → present) via `dynamical-catalog` and slices `precipitation_surface`. Returns a **`precipitation_mm_per_hour`** variable — see the units note below. Time range via xarray `slice`. `opener` is injectable for tests. `open_analysis` returns the raw dataset, for callers that need the 2-D lat/lon coordinates. |
 
 Key facts we assume (verified against the live archive on 2026-10-10):
 - No accumulated APCP exists in the analysis archive — "rain has fallen"
@@ -39,6 +39,23 @@ Key facts we assume (verified against the live archive on 2026-10-10):
 - Dataset chunking: time 2160 h (90 d) chunks, y/x 45 (135 km) — point
   reads are cheap, full-CONUS full-time reads are not.
 
+**Unit convention (load-bearing — do not bypass).** The archive stores
+`precipitation_surface` as a rate in **kg m-2 s-1**, where 1 unit is
+1 mm/s = **3600 mm/h**. That is unintuitive by a factor of 3600 and has
+already caused one wrong threshold in this project. So:
+
+- Everything above `hrrr.py` works in **mm/h** and nothing else. Thresholds
+  are written in mm/h and compared directly, with no local conversion.
+- The kg m-2 s-1 → mm/h conversion happens **exactly once**, in
+  `hrrr.to_mm_per_hour`, and `load_precipitation` returns a variable
+  named `precipitation_mm_per_hour` with `units="mm h-1"`.
+- **Slice before converting.** The archive read is lazy, so applying the
+  conversion to an un-sliced variable forces materialization of the whole
+  array (748 GiB against the live archive). `extract.py` slices time and
+  space first, then converts; a regression test records the shape handed
+  to the converter. Synthetic test datasets cannot catch this because
+  they are already in memory — only a live run will.
+
 ### Places (summer leisure sites)
 
 | module | what exists | notes |
@@ -46,8 +63,8 @@ Key facts we assume (verified against the live archive on 2026-10-10):
 | `tstorm_climo/osm.py` | `KIND_TAGS`, `build_query(bbox, kinds)`, `run_query(query)` | Overpass API. Kinds map to OSM tags (`golf_course` → `leisure=golf_course`, `beach` → `natural=beach`). Body sent with a descriptive User-Agent (Overpass 406-rejects the default `requests` UA). Retries with backoff. |
 | `tstorm_climo/places.py` | `Place` (pydantic), `classify`, `from_overpass`, `deduplicate`, `haversine_km`, `to_polars`, `save_csv`, `load_csv` | Ways/relations use polygon centroids, nodes use position. Kind inferred from the element's own tags (Overpass does not say which selector matched). Dedupe collapses same-named places within 1 km (node+way duplicates) while keeping geographically distinct same-named places. |
 | `tstorm_climo/climatology.py` | `Climatology.summarize(precipitation)` | Per hourly analysis step, counts CONUS-wide grid points above a threshold (default 0.05 mm/h). Takes an **already-loaded** dataset — I/O lives in `hrrr.load_precipitation`, so the class no longer opens the archive. Coarse-grained (whole dataset, no spatial subset); a global sanity check, not a per-place result. |
-| `tstorm_climo/extract.py` | `extract_series(places, start, end, grid=, opener=)` | Long-format per-place hourly series. Block read + gather. |
-| `tstorm_climo/summarize.py` | `place_summary`, `by_local_month`, `by_local_hour`, `scorecard`, `split_half_reliability` | Per-place climatology in local time. Default threshold 0.5 mm/h. |
+| `tstorm_climo/extract.py` | `extract_series(places, start, end, grid=, opener=)` | Long-format per-place hourly series (`place_id, time, precipitation_mm_per_hour, valid, y_index, x_index, grid_lat, grid_lon, snap_distance_km, tz_name`). One contiguous block read, then gather in memory. Slices **before** converting units. Sorted by place then time; the time column resets per place and is not globally sorted. |
+| `tstorm_climo/summarize.py` | `place_summary`, `by_local_month`, `by_local_hour`, `scorecard`, `split_half_reliability` | Per-place climatology in local time. Default threshold 0.5 mm/h. No unit conversion — input is already mm/h. |
 | `tstorm_climo/cli.py` | `summarize --start/--end`, `fetch-places --bbox/--kind/--named-only/--no-dedupe/--output` | argparse subcommands. |
 
 Committed data:
@@ -287,19 +304,24 @@ injected `opener`; no network in the fast test suite.
   The course-vs-beach overlaps (7 courses) need no treatment beyond a
   note. If finer separation is ever genuinely needed, the only real fix
   is a finer dataset, not a different sampling of HRRR.
-- **Wet threshold — units corrected.** The archive stores
-  `precipitation_surface` in **kg m-2 s-1**, where 1 kg m-2 s-1 = 1 mm/s
-  = **3600 mm/h**. An earlier draft of this file proposed `0.01`
+- **Wet threshold — units corrected, conversion centralized.** The archive
+  stores `precipitation_surface` in **kg m-2 s-1**, where 1 kg m-2 s-1 =
+  1 mm/s = **3600 mm/h**. An earlier draft of this file proposed `0.01`
   kg m-2 s-1 as a "small" threshold; that is **36 mm/h**, a cloudburst,
   and would mark only ~0.005% of cells wet. Do not use it.
   Measured June 2025 over the North Shore block: p90 = 0.005 mm/h,
   p99 = 0.65 mm/h, p99.9 = 4.83 mm/h, max = 31.2 mm/h.
   Candidate thresholds and the fraction of cells they mark wet:
-  `0.1 mm/h` (2.78e-05) → 4.0%; `0.5 mm/h` (1.39e-04) → 1.3%;
-  `1.0 mm/h` (2.78e-04) → 0.66%. Prefer expressing the threshold in
-  **mm/h** in the API and converting internally, so this class of
-  error cannot recur. The Phase 2 sensitivity study picks the default;
-  `> 0` remains the "turf was damp" end of the range.
+  `0.1 mm/h` → 4.0%; `0.5 mm/h` → 1.3%; `1.0 mm/h` → 0.66%.
+  Thresholds are now written in **mm/h** everywhere and the conversion
+  lives once in `hrrr.to_mm_per_hour` (see the unit convention above),
+  so this class of error should not recur.
+  Defaults in use: **`summarize.py` = 0.5 mm/h** (per-place, chosen for
+  ranking stability); **`climatology.py` = 0.05 mm/h** (coarse CONUS
+  sanity check, where only dust matters). These are deliberately
+  different because the two layers answer different questions — revisit
+  if that split is not intended. `> 0` remains the "turf was damp" end of
+  the range but is near-useless for ordering places (r = 0.11).
 - **Event definition.** Minimum duration/separation for counting
   separate rain events (two wet hours with a dry hour between: two
   events or one?). Picked per application rather than baked in forever.

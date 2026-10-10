@@ -1,4 +1,4 @@
-"""Tests for Climatology, using a synthetic dataset instead of the network."""
+"""Tests for climatology summaries using synthetic data, not the network."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import xarray as xr
 
 from tstorm_climo.climatology import (
     DEFAULT_WET_THRESHOLD_MM_PER_HOUR,
-    Climatology,
+    summarize,
 )
 from tstorm_climo.hrrr import (
     PRECIPITATION_MM_PER_HOUR,
@@ -51,11 +51,10 @@ def test_summarize_counts_wet_grid_points() -> None:
         ]
     )
     ds = fake_precipitation(rate, times)
-    climo = Climatology()
     precipitation = load_precipitation(
         "2025-07-15T17", "2025-07-15T18", opener=make_opener(ds)
     )
-    events = climo.summarize(precipitation)
+    events = summarize(precipitation)
     assert events == {
         "2025-07-15T17:00:00": 1,
         "2025-07-15T18:00:00": 3,
@@ -108,7 +107,7 @@ def test_default_threshold_is_in_mm_per_hour() -> None:
     # 0.05 kg m-2 s-1 = 180 mm/h: well above 0.05 mm/h, so wet.
     # 1e-5 kg m-2 s-1 = 0.036 mm/h: below 0.05 mm/h, so dry.
     rate = np.array([[[0.05, 1e-5]]])
-    events = Climatology().summarize(
+    events = summarize(
         load_precipitation("2025-07-15T17", "2025-07-15T17",
                            opener=make_opener(fake_precipitation(rate, times)))
     )
@@ -120,7 +119,7 @@ def test_threshold_is_exclusive() -> None:
     times = ["2025-07-15T17"]
     exactly = 0.05 / 3600.0  # kg m-2 s-1 == 0.05 mm/h
     rate = np.array([[[exactly, exactly]]])
-    events = Climatology().summarize(
+    events = summarize(
         load_precipitation("2025-07-15T17", "2025-07-15T17",
                            opener=make_opener(fake_precipitation(rate, times)))
     )
@@ -131,7 +130,7 @@ def test_custom_threshold_is_honored() -> None:
     times = ["2025-07-15T17"]
     # 1 mm/h == 2.78e-4 kg m-2 s-1
     rate = np.array([[[0.5e-3, 0.1e-3]]])  # 1.8 mm/h, 0.36 mm/h
-    events = Climatology().summarize(
+    events = summarize(
         load_precipitation("2025-07-15T17", "2025-07-15T17",
                            opener=make_opener(fake_precipitation(rate, times))),
         threshold_mm_per_hour=1.0,

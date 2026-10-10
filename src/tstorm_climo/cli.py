@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from tstorm_climo.climatology import Climatology
+from tstorm_climo.climatology import summarize
 from tstorm_climo.hrrr import load_precipitation
 from tstorm_climo.osm import KIND_TAGS, build_query, run_query
 from tstorm_climo.places import deduplicate, from_overpass, save_csv
@@ -80,8 +80,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "summarize":
         precipitation = load_precipitation(args.start, args.end)
-        climo = Climatology()
-        events = climo.summarize(precipitation)
+        events = summarize(precipitation)
         for time, count in events.items():
             print(f"{time}: {count} grid points with precipitation")
         return 0

@@ -45,7 +45,9 @@ Key facts we assume (verified against the live archive on 2026-10-10):
 | --- | --- | --- |
 | `tstorm_climo/osm.py` | `KIND_TAGS`, `build_query(bbox, kinds)`, `run_query(query)` | Overpass API. Kinds map to OSM tags (`golf_course` → `leisure=golf_course`, `beach` → `natural=beach`). Body sent with a descriptive User-Agent (Overpass 406-rejects the default `requests` UA). Retries with backoff. |
 | `tstorm_climo/places.py` | `Place` (pydantic), `classify`, `from_overpass`, `deduplicate`, `haversine_km`, `to_polars`, `save_csv`, `load_csv` | Ways/relations use polygon centroids, nodes use position. Kind inferred from the element's own tags (Overpass does not say which selector matched). Dedupe collapses same-named places within 1 km (node+way duplicates) while keeping geographically distinct same-named places. |
-| `tstorm_climo/climatology.py` | `Climatology.summarize(start, end, opener)` | Per hourly analysis step, counts CONUS-wide grid points with rate > 0. Currently coarse-grained (whole dataset, no spatial subset). |
+| `tstorm_climo/climatology.py` | `Climatology.summarize(precipitation)` | Per hourly analysis step, counts CONUS-wide grid points above a threshold (default 0.05 mm/h). Takes an **already-loaded** dataset — I/O lives in `hrrr.load_precipitation`, so the class no longer opens the archive. Coarse-grained (whole dataset, no spatial subset); a global sanity check, not a per-place result. |
+| `tstorm_climo/extract.py` | `extract_series(places, start, end, grid=, opener=)` | Long-format per-place hourly series. Block read + gather. |
+| `tstorm_climo/summarize.py` | `place_summary`, `by_local_month`, `by_local_hour`, `scorecard`, `split_half_reliability` | Per-place climatology in local time. Default threshold 0.5 mm/h. |
 | `tstorm_climo/cli.py` | `summarize --start/--end`, `fetch-places --bbox/--kind/--named-only/--no-dedupe/--output` | argparse subcommands. |
 
 Committed data:

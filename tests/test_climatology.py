@@ -6,7 +6,10 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from tstorm_climo.climatology import Climatology
+from tstorm_climo.climatology import (
+    DEFAULT_WET_THRESHOLD_MM_PER_HOUR,
+    Climatology,
+)
 from tstorm_climo.hrrr import load_precipitation
 
 
@@ -88,3 +91,45 @@ def test_load_precipitation_is_empty_for_entirely_pre_2018_range() -> None:
         "2015-01-01", "2017-12-31", opener=make_opener(ds)
     )
     assert sliced.sizes["time"] == 0
+
+
+def test_default_threshold_is_in_mm_per_hour() -> None:
+    """0.05 mm/h must be converted to kg m-2 s-1 before comparing.
+
+    Guards the unit trap: 0.05 mm/h is 1.39e-5 kg m-2 s-1, not 0.05.
+    A cell at exactly 0.05 kg m-2 s-1 (i.e. 180 mm/h) must still count.
+    """
+    assert DEFAULT_WET_THRESHOLD_MM_PER_HOUR == 0.05
+    times = ["2025-07-15T17"]
+    # 0.05 kg m-2 s-1 = 180 mm/h: well above 0.05 mm/h, so wet.
+    # 1e-5 kg m-2 s-1 = 0.036 mm/h: below 0.05 mm/h, so dry.
+    rate = np.array([[[0.05, 1e-5]]])
+    events = Climatology().summarize(
+        load_precipitation("2025-07-15T17", "2025-07-15T17",
+                           opener=make_opener(fake_precipitation(rate, times)))
+    )
+    assert events == {"2025-07-15T17:00:00": 1}
+
+
+def test_threshold_is_exclusive() -> None:
+    """A cell exactly at the threshold is not counted as wet."""
+    times = ["2025-07-15T17"]
+    exactly = 0.05 / 3600.0  # kg m-2 s-1 == 0.05 mm/h
+    rate = np.array([[[exactly, exactly]]])
+    events = Climatology().summarize(
+        load_precipitation("2025-07-15T17", "2025-07-15T17",
+                           opener=make_opener(fake_precipitation(rate, times)))
+    )
+    assert events == {"2025-07-15T17:00:00": 0}
+
+
+def test_custom_threshold_is_honored() -> None:
+    times = ["2025-07-15T17"]
+    # 1 mm/h == 2.78e-4 kg m-2 s-1
+    rate = np.array([[[0.5e-3, 0.1e-3]]])  # 1.8 mm/h, 0.36 mm/h
+    events = Climatology().summarize(
+        load_precipitation("2025-07-15T17", "2025-07-15T17",
+                           opener=make_opener(fake_precipitation(rate, times))),
+        threshold_mm_per_hour=1.0,
+    )
+    assert events == {"2025-07-15T17:00:00": 1}

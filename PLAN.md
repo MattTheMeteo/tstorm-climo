@@ -112,8 +112,13 @@ injected `opener`; no network in the fast test suite.
      chunks y/x at 135 km, so point reads are cheap, scattered reads
      are not).
 3. **Per-place climatology summary.**
-   - `wet_events = precipitation > threshold` (threshold TBD — 0 vs a
-     small value like 0.01 mm/h is an explicit, documented choice).
+   - `wet = precipitation > threshold`, with the threshold given in
+     **mm/h** and converted internally (see the units note above).
+   - Steps where the archive is NaN must be **excluded, not counted as
+     dry**. Measured: 6.5% of pre-2018 steps and 1.2% of 2018–2019
+     steps are NaN over the North Shore; 2020 onward is effectively
+     clean (1 step in 2020, none after). Carrying a `valid` flag
+     through the extraction is the way to make this explicit.
    - Output a polars table: place × (wet count, wet fraction, rain
      hours) sliced by hour-of-day and month; the "Chuck scorecard" is a
      filter on this table.
@@ -134,11 +139,14 @@ injected `opener`; no network in the fast test suite.
 
 ### Phase 3: Scale and memory strategy
 
-8. **Caching/staging layer.** Reading the full archive hour by hour from
-   Icechunk is fine for a date range × few dozen points, bad for
-   multi-year × multi-place loops. Build a small cache: pre-slice the
-   archive by time range for the committed place list, persist per-place
-   time series to local parquet, keyed by data version + time window.
+8. **Caching/staging layer — likely unnecessary, deprioritized.**
+   Measured against the live archive: the North Shore block is only
+   **26 × 21 nodes**, and the *entire* 2018–2026 window over that block
+   is **153 MB in ~12 s**, with no cache priming. A full-year read is
+   ~19 MB / ~2 s. The "bad for multi-year × multi-place loops" worry did
+   not materialize: one contiguous block read, then index in memory,
+   covers everything. Build a parquet staging layer only if a real need
+   appears (many regions at once, or CONUS rather than a bbox).
 9. **Adapt to archive format changes.** dynamical.org keeps
    `analysis` (time-optimized), `analysis-virtual` (map-optimized), plus
    forecast and 18 h low-latency variants. Confirm which is best for
@@ -182,12 +190,19 @@ injected `opener`; no network in the fast test suite.
   The course-vs-beach overlaps (7 courses) need no treatment beyond a
   note. If finer separation is ever genuinely needed, the only real fix
   is a finer dataset, not a different sampling of HRRR.
-- **Wet threshold.** Rate > 0 counts even sub-drizzle, which is
-  realistic for "the turf was wet" but could overstate "it rained on my
-  round." Needs a decision informed by Phase 2's sensitivity study.
-  Leaning to 0.01 kg m-2 s-1 (≈0.01 mm/h) over `> 0`, since the archive
-  stores a floating-point *average* rate and exact zero is not a
-  meaningful boundary.
+- **Wet threshold — units corrected.** The archive stores
+  `precipitation_surface` in **kg m-2 s-1**, where 1 kg m-2 s-1 = 1 mm/s
+  = **3600 mm/h**. An earlier draft of this file proposed `0.01`
+  kg m-2 s-1 as a "small" threshold; that is **36 mm/h**, a cloudburst,
+  and would mark only ~0.005% of cells wet. Do not use it.
+  Measured June 2025 over the North Shore block: p90 = 0.005 mm/h,
+  p99 = 0.65 mm/h, p99.9 = 4.83 mm/h, max = 31.2 mm/h.
+  Candidate thresholds and the fraction of cells they mark wet:
+  `0.1 mm/h` (2.78e-05) → 4.0%; `0.5 mm/h` (1.39e-04) → 1.3%;
+  `1.0 mm/h` (2.78e-04) → 0.66%. Prefer expressing the threshold in
+  **mm/h** in the API and converting internally, so this class of
+  error cannot recur. The Phase 2 sensitivity study picks the default;
+  `> 0` remains the "turf was damp" end of the range.
 - **Event definition.** Minimum duration/separation for counting
   separate rain events (two wet hours with a dry hour between: two
   events or one?). Picked per application rather than baked in forever.

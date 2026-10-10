@@ -61,10 +61,10 @@ already caused one wrong threshold in this project. So:
 | module | what exists | notes |
 | --- | --- | --- |
 | `tstorm_climo/osm.py` | `KIND_TAGS`, `build_query(bbox, kinds)`, `run_query(query)` | Overpass API. Kinds map to OSM tags (`golf_course` → `leisure=golf_course`, `beach` → `natural=beach`). Body sent with a descriptive User-Agent (Overpass 406-rejects the default `requests` UA). Retries with backoff. |
-| `tstorm_climo/places.py` | `Place` (pydantic), `classify`, `from_overpass`, `deduplicate`, `haversine_km`, `to_polars`, `save_csv`, `load_csv` | Ways/relations use polygon centroids, nodes use position. Kind inferred from the element's own tags (Overpass does not say which selector matched). Dedupe collapses same-named places within 1 km (node+way duplicates) while keeping geographically distinct same-named places. |
-| `tstorm_climo/climatology.py` | `Climatology.summarize(precipitation)` | Per hourly analysis step, counts CONUS-wide grid points above a threshold (default 0.05 mm/h). Takes an **already-loaded** dataset — I/O lives in `hrrr.load_precipitation`, so the class no longer opens the archive. Coarse-grained (whole dataset, no spatial subset); a global sanity check, not a per-place result. |
-| `tstorm_climo/extract.py` | `extract_series(places, start, end, grid=, opener=)` | Long-format per-place hourly series (`place_id, time, precipitation_mm_per_hour, valid, y_index, x_index, grid_lat, grid_lon, snap_distance_km, tz_name`). One contiguous block read, then gather in memory. Slices **before** converting units. Sorted by place then time; the time column resets per place and is not globally sorted. |
-| `tstorm_climo/summarize.py` | `place_summary`, `by_local_month`, `by_local_hour`, `scorecard`, `split_half_reliability` | Per-place climatology in local time. Default threshold 0.5 mm/h. No unit conversion — input is already mm/h. |
+| `tstorm_climo/places.py` | `Place` (pydantic), `classify`, `from_overpass`, `deduplicate`, `haversine_km`, `to_polars`, `save_csv`, `load_csv` | `Place.place_key` is the stable source-qualified OSM identity (`osm:{type}:{id}`). Ways/relations use polygon centroids, nodes use position. Kind inferred from the element's own tags (Overpass does not say which selector matched). Dedupe collapses same-named places within 1 km (node+way duplicates) while keeping geographically distinct same-named places. |
+| `tstorm_climo/climatology.py` | `summarize_grid(precipitation)` | Per hourly analysis step, counts CONUS-wide grid points above a threshold (default 0.05 mm/h). Takes an **already-loaded** dataset — I/O lives in `hrrr.load_precipitation`. Coarse-grained (whole dataset, no spatial subset); a global sanity check, not a per-place result. |
+| `tstorm_climo/extract.py` | `extract_series(places, start, end, grid=, opener=)` | Long-format per-place hourly series (`place_key, time, precipitation_mm_per_hour, valid, y_index, x_index, grid_lat, grid_lon, snap_distance_km, tz_name`). `place_key` is independent of input order; summaries join by key. One contiguous block read, then gather in memory. Slices **before** converting units. Sorted by input place order, then time; the time column resets per place and is not globally sorted. |
+| `tstorm_climo/summarize.py` | `place_summary`, `by_local_month`, `by_local_hour`, `scorecard`, `split_half_reliability` | Per-place climatology in local time. Default threshold 0.05 mm/h, shared with `summarize_grid`. No unit conversion — input is already mm/h. |
 | `tstorm_climo/provenance.py` | `build_metadata`, `write_metadata`, `format_caveats` | JSON sidecar recording archive, date range, threshold, reliability and the CC-BY / ODbL attribution. Makes a published number reproducible and keeps licence obligations in one place. |
 | `tstorm_climo/cli.py` | `rain-report --places/--start/--end/--threshold/--kind/--month/--output`, `summarize --start/--end`, `fetch-places --bbox/--kind/--named-only/--no-dedupe/--output` | argparse subcommands. `rain-report` prints the leaderboard, its reliability figure and caveats, and optionally writes parquet + sidecar. |
 
@@ -132,11 +132,11 @@ injected `opener`; no network in the fast test suite.
      (`tsrate`, m s-1 of snow **depth**, ~10× density difference);
      `composite_reflectivity` (dBZ, the independent radar check);
      `precipitable_water_atmosphere` (moisture, not precipitation).
-   - **Long format**: one row per (place, hour), columns
-     `place_id, time, precipitation_mm_per_hour, valid, y_index,
-     x_index, grid_lat, grid_lon, snap_distance_km`. Sorted by place
-     then time; the time column resets per place and is *not* globally
-     sorted.
+    - **Long format**: one row per (place, hour), columns
+      `place_key, time, precipitation_mm_per_hour, valid, y_index,
+      x_index, grid_lat, grid_lon, snap_distance_km, tz_name`. Sorted by
+      input place order then time; the time column resets per place and
+      is *not* globally sorted.
    - **Rates converted to mm/h at the boundary** (×3600), so the
      kg m-2 s-1 unit never reaches the output.
    - **`valid` flag** carried explicitly: 99.70% valid over 2018–2026
@@ -152,8 +152,8 @@ injected `opener`; no network in the fast test suite.
      chunks y/x at 135 km, so point reads are cheap, scattered reads
      are not).
 3. ~~**Per-place climatology summary.**~~ **DONE**
-   (`tstorm_climo/summarize.py`). Default threshold **0.5 mm/h**
-   ("it actually rained on the course"), overridable per call; the
+   (`tstorm_climo/summarize.py`). Default threshold **0.05 mm/h**,
+   overridable per call; the
    `> 0` end of the range stays available for "the turf was damp".
    - `place_summary` → per place: `valid_hours`/`coverage` (data
      quality), `wet_hours`/`wet_fraction`, `rain_mm` (depth; each step
@@ -232,6 +232,41 @@ injected `opener`; no network in the fast test suite.
    and say plainly that a 3 km analysis archive cannot resolve these
    courses. This is the most important finding in the project so far
    and outranks the point differences.
+
+   ### ⚠ June — the question Chuck actually asked — is the least reliable
+
+   Split-half reliability by **local calendar month**, 50 courses,
+   2018–2026, split by year (2018–2021 vs 2022–2026):
+
+   | Month | 0.05 | 0.10 | 0.50 | 1.00 | 2.00 mm/h |
+   |---|---|---|---|---|---|
+   | Jan | 0.64 | 0.75 | 0.10 | −0.60 | 0.67 |
+   | Mar | −0.43 | −0.35 | 0.68 | 0.69 | 0.64 |
+   | **Jun** | 0.16 | 0.17 | **0.28** | 0.14 | 0.14 |
+   | Jul | 0.39 | 0.55 | 0.62 | 0.64 | 0.62 |
+   | Sep | −0.47 | −0.22 | 0.04 | −0.02 | 0.06 |
+   | **All months (mean)** | 0.06 | 0.14 | 0.18 | 0.21 | 0.27 |
+
+   **June is worse than the all-year figure of 0.41** — best case 0.28,
+   and no threshold does better than 0.28. The arithmetic explains why:
+   in June at 0.5 mm/h each course sees 144–174 wet hours, a spread of
+   only **30 hours**, against Poisson noise of **±12.6 hours** on ~158
+   events. The true spread is barely above noise, so the ordering does
+   not survive a different date range.
+
+   Caveats on these numbers: individual month/threshold cells are
+   themselves unstable (Sept is −0.47, Jan 0.75), so read them as
+   "this cell is uninformative", not as precise estimates. Splitting by
+   year is the harshest split; adjacent-year splits would look better
+   and would overstate reproducibility.
+
+   **Design consequence for the visualization:** lead with the all-year
+   view (r = 0.41) labelled low-confidence; present June as a
+   *distribution* of wet hours rather than a ranking; and look for
+   stable differences at a **coarser grouping** (regions, or the wet
+   half vs the dry half) rather than individual courses. Ranking 50
+   courses in June would need ~10× more record, a larger effect, or
+   coarser units — not better code.
 4. ~~**CLI**: `rain-report`~~ **DONE.** Prints the ranked table
    (driest first), with `--month N` for a local-time month slice,
    `--threshold` in mm/h, `--kind` to filter, and `--output` for parquet
@@ -326,11 +361,10 @@ injected `opener`; no network in the fast test suite.
   Thresholds are now written in **mm/h** everywhere and the conversion
   lives once in `hrrr.to_mm_per_hour` (see the unit convention above),
   so this class of error should not recur.
-  Defaults in use: **`summarize.py` = 0.5 mm/h** (per-place, chosen for
-  ranking stability); **`climatology.py` = 0.05 mm/h** (coarse CONUS
-  sanity check, where only dust matters). These are deliberately
-  different because the two layers answer different questions — revisit
-  if that split is not intended. `> 0` remains the "turf was damp" end of
+   The default for both per-place summaries and the grid-wide sanity
+   check is **0.05 mm/h**, shared from `thresholds.py`. Ranking reliability
+   remains an empirical property of the selected threshold and is reported
+   alongside leaderboards. `> 0` remains the "turf was damp" end of
   the range but is near-useless for ordering places (r = 0.11).
 - **Event definition.** Minimum duration/separation for counting
   separate rain events (two wet hours with a dry hour between: two

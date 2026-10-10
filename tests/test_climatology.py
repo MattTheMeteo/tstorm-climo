@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 import xarray as xr
 
 from tstorm_climo.climatology import (
     DEFAULT_WET_THRESHOLD_MM_PER_HOUR,
     Climatology,
 )
-from tstorm_climo.hrrr import load_precipitation
+from tstorm_climo.hrrr import (
+    PRECIPITATION_MM_PER_HOUR,
+    load_precipitation,
+)
 
 
 def fake_precipitation(rate: np.ndarray, times: list[str]) -> xr.Dataset:
@@ -133,3 +137,21 @@ def test_custom_threshold_is_honored() -> None:
         threshold_mm_per_hour=1.0,
     )
     assert events == {"2025-07-15T17:00:00": 1}
+
+
+def test_load_precipitation_returns_mm_per_hour() -> None:
+    """The unit conversion happens once, at read, in hrrr.to_mm_per_hour.
+
+    The dataset must already be mm/h, so a downstream threshold needs no
+    conversion of its own.
+    """
+    times = ["2025-07-15T17"]
+    rate = np.array([[[1.0]]], dtype=np.float32)  # kg m-2 s-1 -> 3600 mm/h
+    ds = fake_precipitation(rate, times)
+    loaded = load_precipitation(
+        "2025-07-15T17", "2025-07-15T17", opener=make_opener(ds)
+    )
+    assert loaded[PRECIPITATION_MM_PER_HOUR][0, 0, 0].item() == pytest.approx(
+        3600.0
+    )
+    assert loaded[PRECIPITATION_MM_PER_HOUR].attrs["units"] == "mm h-1"

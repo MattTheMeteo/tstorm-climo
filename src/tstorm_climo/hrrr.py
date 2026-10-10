@@ -20,6 +20,16 @@ MIN_VALID_DATE = "2018-01-01"
 # Average precipitation rate since the previous step, kg m-2 s-1.
 PRECIPITATION_VARIABLE = "precipitation_surface"
 
+# The archive stores precipitation as a rate in kg m-2 s-1, where 1 unit
+# is 1 mm/s, which is 3600 mm/h. That unit is easy to misread by three
+# orders of magnitude, so everything above this module works in mm/h and
+# the conversion happens exactly once, here.
+SECONDS_PER_HOUR = 3600.0
+
+# Name of the rate after conversion, used by load_precipitation and
+# extract so no downstream module has to know the archive's units.
+PRECIPITATION_MM_PER_HOUR = "precipitation_mm_per_hour"
+
 # Factory for opening the HRRR dataset; swappable in tests.
 type Opener = Callable[..., xr.Dataset]
 
@@ -59,11 +69,36 @@ def load_precipitation(
         opener: Override for ``dynamical_catalog.open`` (for tests).
 
     Returns:
-        Dataset with a ``precipitation`` variable (renamed from the
-        native ``precipitation_surface``) over ``time × y × x``.
+        Dataset with a ``precipitation_mm_per_hour`` variable over
+        ``time × y × x``. The rate is converted from the archive's
+        kg m-2 s-1 here, once, so callers never handle that unit.
     """
     da = open_analysis(dataset_id=dataset_id, opener=opener)[
         PRECIPITATION_VARIABLE
     ]
     da = da.sel(time=slice(max(start, MIN_VALID_DATE), end))
-    return da.to_dataset(name="precipitation")
+    return to_mm_per_hour(da).to_dataset(name=PRECIPITATION_MM_PER_HOUR)
+
+
+def to_mm_per_hour(da: xr.DataArray) -> xr.DataArray:
+    """Convert a kg m-2 s-1 precipitation rate to mm/h.
+
+    Args:
+        da: DataArray of the archive's ``precipitation_surface``, or an
+            equivalent slice of it.
+
+    Returns:
+        The same values scaled by :data:`SECONDS_PER_HOUR`, with the
+        ``units`` attribute updated. NaN stays NaN, and zero stays zero.
+    """
+    converted = da * SECONDS_PER_HOUR
+    converted.attrs = {
+        **da.attrs,
+        "units": "mm h-1",
+        "long_name": "Hourly precipitation rate",
+        "comment": (
+            "Average precipitation rate over the previous hour, "
+            "converted from the archive's kg m-2 s-1."
+        ),
+    }
+    return converted

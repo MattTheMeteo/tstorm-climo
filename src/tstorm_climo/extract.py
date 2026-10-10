@@ -8,10 +8,10 @@ amortises across every place inside it.
 
 Two deliberate choices:
 
-- **Rates are converted to mm/h on the way out.** The archive stores
-  ``precipitation_surface`` in kg m-2 s-1, where 1 unit is 1 mm/s is
-  3600 mm/h. That unit is easy to misread by three orders of magnitude,
-  so it never reaches the output.
+- **Rates are converted to mm/h.** The conversion lives in
+  :func:`tstorm_climo.hrrr.to_mm_per_hour` and is applied here once, so
+  the archive's kg m-2 s-1 never reaches the output and no caller has
+  to remember the factor of 3600.
 - **Missing data is flagged, not silently dry.** The archive carries
   NaN where source data is missing, and ``NaN > threshold`` is ``False``.
   Emitting a ``valid`` column keeps "no data" distinguishable from "no
@@ -32,19 +32,17 @@ import polars as pl
 from tstorm_climo.grid import Grid, GridCell
 from tstorm_climo.hrrr import (
     MIN_VALID_DATE,
+    PRECIPITATION_MM_PER_HOUR,
     PRECIPITATION_VARIABLE,
     Opener,
     open_analysis,
+    to_mm_per_hour,
 )
 from tstorm_climo.places import Place
 
-# kg m-2 s-1 -> mm/h. 1 kg m-2 of liquid water is 1 mm of depth, so a
-# rate of 1 kg m-2 s-1 is 1 mm/s, which is 3600 mm/h.
-SECONDS_PER_HOUR = 3600.0
-
 # Column names of the returned frame, for callers that build on it.
 TIME_COLUMN = "time"
-RATE_COLUMN = "precipitation_mm_per_hour"
+RATE_COLUMN = PRECIPITATION_MM_PER_HOUR
 VALID_COLUMN = "valid"
 
 SCHEMA = {
@@ -98,6 +96,9 @@ def extract_series(
     cells = active_grid.locate_places(places)
 
     row_slice, col_slice = _block_bounds(cells, active_grid)
+    # Slice time and space *before* converting units: converting first
+    # would materialize the whole 22 TB archive (the read is lazy until
+    # a value is needed, and the multiply would force it).
     block = (
         ds[PRECIPITATION_VARIABLE]
         .sel(time=slice(max(start, MIN_VALID_DATE), end))
@@ -105,12 +106,12 @@ def extract_series(
     )
     if block.sizes["time"] == 0:
         return pl.DataFrame(schema=SCHEMA)
+    block = to_mm_per_hour(block)
 
-    # Gather each place's node out of the block, then convert units.
+    # Gather each place's node out of the block.
     y_idx = np.array([c.y_index for c in cells]) - row_slice.start
     x_idx = np.array([c.x_index for c in cells]) - col_slice.start
-    values = block.values[:, y_idx, x_idx].astype(np.float64)
-    mm_per_hour = values * SECONDS_PER_HOUR
+    mm_per_hour = block.values[:, y_idx, x_idx].astype(np.float64)
     times = np.asarray(block["time"].values)
 
     return _to_frame(places, cells, times, mm_per_hour)

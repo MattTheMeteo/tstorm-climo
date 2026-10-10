@@ -306,3 +306,44 @@ def test_mixed_timezones_can_be_partitioned_and_converted() -> None:
         ).items()
     )
     assert sorted(converted["local"].dt.hour().to_list()) == [12, 13]
+
+
+def test_unit_conversion_happens_after_slicing(monkeypatch) -> None:
+    """Slicing must precede the mm/h conversion.
+
+    The archive read is lazy, so converting the full variable before
+    slicing forces materialization of the entire array — 748 GiB when
+    pointed at the live archive. Synthetic datasets are already in
+    memory, so this cannot be caught by asserting on values; instead we
+    record the shape the converter is handed and require it to be the
+    requested slice, not the whole variable.
+    """
+    import tstorm_climo.extract as extract_module
+
+    lat, lon = make_coords()
+    # Deliberately many more steps in the source than are requested.
+    n_source = 50
+    times = [
+        (pd.Timestamp("2025-07-14T00:00") + pd.Timedelta(hours=h)).isoformat()
+        for h in range(n_source)
+    ]
+    seen: list[tuple[int, ...]] = []
+    real = extract_module.to_mm_per_hour
+
+    def recording(da):
+        seen.append(tuple(da.shape))
+        return real(da)
+
+    monkeypatch.setattr(extract_module, "to_mm_per_hour", recording)
+    rate = np.zeros((n_source, N_Y, N_X), dtype=np.float32)
+    out = extract_series(
+        [one_place()],
+        "2025-07-15T00",
+        "2025-07-15T03",
+        opener=make_opener(rate, times),
+    )
+    assert out.height == 4
+    assert seen, "converter was never called"
+    # Converter must see only the requested hours, never all 50.
+    assert all(shape[0] <= 4 for shape in seen), seen
+    assert out.height <= 4

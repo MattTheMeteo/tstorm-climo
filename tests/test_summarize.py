@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -16,6 +17,7 @@ from tstorm_climo.summarize import (
     by_local_month,
     place_summary,
     scorecard,
+    split_half_reliability,
     wet_rows,
 )
 
@@ -283,3 +285,31 @@ def test_empty_series_produces_empty_summary() -> None:
     series = make_series([[0.0] * 2]).filter(pl.col("place_id") > 99)
     out = place_summary(series, [place(0)])
     assert out.height == 0
+
+def test_split_half_reliability_high_for_a_real_signal() -> None:
+    """Places that genuinely differ must reproduce across halves."""
+    rates = [[1.0] * 12] * 5 + [[0.0] * 12] * 5
+    series = make_series(rates)
+    assert split_half_reliability(series) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_split_half_reliability_low_for_pure_noise() -> None:
+    """Coin-flip rain must not produce a reproducible ordering."""
+    import random
+
+    rng = random.Random(0)
+    rates = [[rng.choice([0.0, 1.0]) for _ in range(12)] for _ in range(40)]
+    series = make_series(rates)
+    r = split_half_reliability(series)
+    assert abs(r) < 0.6
+
+
+def test_split_half_reliability_is_nan_without_variation() -> None:
+    """All places identical leaves nothing to correlate."""
+    series = make_series([[0.0] * 12] * 6)
+    assert np.isnan(split_half_reliability(series))
+
+
+def test_split_half_reliability_nan_for_a_single_place() -> None:
+    series = make_series([[0.0, 1.0, 0.0, 1.0]])
+    assert np.isnan(split_half_reliability(series))

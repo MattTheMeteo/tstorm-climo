@@ -153,8 +153,8 @@ injected `opener`; no network in the fast test suite.
    end):**
    - Overall wet fraction spans only **4.9%–5.4%** across all 50
      courses. The spread is ~5.8 standard errors (SE ≈ 0.084 pp with
-     ~70k valid hours), so it is real signal — but the effect size is
-     small, and the leaderboard differences are correspondingly small.
+     ~70k valid hours), so it is statistically real — but see the
+     reliability warning below, which is the important part.
    - June alone spans **2.5%–3.0%**.
    - **Diurnal signal is weak**: by local hour, wet fraction varies only
      4.6%–5.5% across the day, with a shallow maximum around 07:00 and
@@ -164,8 +164,54 @@ injected `opener`; no network in the fast test suite.
      checked against a fixed-offset model in both DST seasons.
      Plausible meteorology: much of New England summer rain is
      stratiform or frontal rather than convective, so the classic
-     afternoon-convection peak is muted. Worth stating in any published
-     output rather than presenting the flat curve as a bug.
+     afternoon-convection peak is muted.
+
+   ### `categorical_rain_surface` compared (item 7, mostly answered)
+
+   `crain` (0/1, "0=no; 1=yes", `step_type: instant`) was evaluated over
+   the same 50 courses × 2018–2026:
+   - **It is a rate cutoff in disguise.** Agreement with `rate > 0.01`
+     is 97.0%, and `crain == 1` cases sit at a median rate of
+     0.20 mm/h with only 7.1% below 0.01 mm/h. It is close to, but not
+     identical to, a ~0.01 mm/h threshold.
+   - It marks **more** hours wet than any rate threshold of interest:
+     11.8% of hours, vs 17.6% at `> 0`, 13.1% at `> 0.01`, 5.2% at
+     `> 0.5`. So it behaves like a "trace of rain" detector, close to
+     the wet end of the range.
+   - 1.8% of `crain == 0` hours still carry `rate > 0.1 mm/h`, so it is
+     not a clean restatement of the rate.
+   - NaN positions are **identical** to the rate field's, confirming the
+     same archive gaps rather than independent data.
+   - Conclusion: it does not replace a threshold decision; it mostly
+     relocates it. Keep it as a cross-check in Phase 2, not as the
+     primary definition.
+
+   ### ⚠ The ranking is mostly noise — read this before publishing
+
+   Split-half reliability (correlating each course' wet fraction from
+   the first half of the record against the second half) measures how
+   much of a course-to-course difference is stable signal rather than
+   sampling noise:
+
+   | Wet definition | Split-half r |
+   |---|---|
+   | `crain == 1` | **0.66** |
+   | `rate > 0.5 mm/h` | **0.40** |
+   | `rate > 0.01 mm/h` | −0.10 |
+   | `rate > 0` | 0.13 |
+
+   So the between-course spread is **substantially sampling noise**, and
+   the apparent 4.9%–5.4% range is mostly which eight years you happened
+   to look at. `crain == 1` is the most stable of these, and
+   `rate > 0.5` is moderately stable; `rate > 0` is no better than a
+   coin flip for ordering courses.
+
+   Consequence: the leaderboard must **not** present single-year or
+   low-threshold rankings as meaningful. Report the reliability figure
+   next to any ranking, prefer `crain`/higher thresholds for stability,
+   and say plainly that a 3 km analysis archive cannot resolve these
+   courses. This is the most important finding in the project so far
+   and outranks the point differences.
 4. **CLI**: `rain-report --places places.csv --start/--end`, printing a
    ranked table (e.g. driest-to-wettest June at each course).
 

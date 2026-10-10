@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import numpy as np
 import polars as pl
 
 from tstorm_climo.extract import RATE_COLUMN, TIME_COLUMN, VALID_COLUMN
@@ -224,6 +225,59 @@ def scorecard(
         if c in out.columns
     ]
     return out.sort(keys)
+
+
+def split_half_reliability(
+    series: pl.DataFrame,
+    *,
+    threshold_mm_per_hour: float = DEFAULT_WET_THRESHOLD_MM_PER_HOUR,
+) -> float:
+    """How stable is the between-place ranking across the record?
+
+    Splits the time range in half, computes each place's wet fraction in
+    each half, and correlates the two vectors. A value near 1 means
+    place-to-place differences are real and reproducible; near 0 means
+    the ordering is sampling noise and would reorder on a different date
+    range. This is the check that decides whether a leaderboard is worth
+    publishing.
+
+    Args:
+        series: Long-format extraction output.
+        threshold_mm_per_hour: Rate above which an hour counts as wet.
+
+    Returns:
+        Pearson correlation of the two halves, or ``nan`` if either half
+        has too little variation to correlate.
+    """
+    wet = wet_rows(series, threshold_mm_per_hour)
+    if wet.height == 0:
+        return float("nan")
+
+    n_places = wet["place_id"].n_unique()
+    if n_places < 2:
+        return float("nan")
+
+    # Split on the time value, not row position: the long format is
+    # place-major, so a head/tail cut would slice mid-place and drop
+    # places from one half entirely.
+    midpoint = wet[TIME_COLUMN].median()
+    left = _wet_fractions(wet.filter(pl.col(TIME_COLUMN) <= midpoint))
+    right = _wet_fractions(wet.filter(pl.col(TIME_COLUMN) > midpoint))
+    if left is None or right is None:
+        return float("nan")
+    return float(np.corrcoef(left, right)[0, 1])
+
+
+def _wet_fractions(part: pl.DataFrame) -> list[float] | None:
+    """Per-place wet fraction for one time block, ordered by place_id."""
+    counts = part.group_by("place_id").agg(
+        wet=pl.col("wet").sum(), total=pl.len()
+    ).sort("place_id")
+    fractions = counts["wet"] / counts["total"]
+    values = fractions.to_list()
+    if len(set(values)) < 2:
+        return None
+    return [float(v) for v in values]
 
 
 def _with_places(

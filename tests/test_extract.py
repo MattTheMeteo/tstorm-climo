@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -10,6 +12,7 @@ import xarray as xr
 
 from tstorm_climo.extract import (
     RATE_COLUMN,
+    SCHEMA,
     TIME_COLUMN,
     VALID_COLUMN,
     extract_series,
@@ -72,10 +75,8 @@ def flat_opener(value: float, n_times: int = 3):
 def test_empty_places_returns_empty_frame_with_schema() -> None:
     out = extract_series([], "2025-07-01", "2025-08-01", opener=flat_opener(0.0))
     assert out.height == 0
-    assert out.columns == list(
-        ["place_id", TIME_COLUMN, RATE_COLUMN, VALID_COLUMN,
-         "y_index", "x_index", "grid_lat", "grid_lon", "snap_distance_km"]
-    )
+    assert out.columns == list(SCHEMA)
+    assert out.schema == SCHEMA
 
 
 def test_long_format_is_one_row_per_place_hour() -> None:
@@ -185,10 +186,8 @@ def test_pre_2018_range_is_clamped_away() -> None:
         opener=make_opener(rate, times),
     )
     assert out.height == 0
-    assert out.columns == list(
-        ["place_id", TIME_COLUMN, RATE_COLUMN, VALID_COLUMN,
-         "y_index", "x_index", "grid_lat", "grid_lon", "snap_distance_km"]
-    )
+    assert out.columns == list(SCHEMA)
+    assert out.schema == SCHEMA
 
 
 def test_pre_2018_rows_are_dropped_but_later_ones_kept() -> None:
@@ -254,3 +253,49 @@ def test_colocated_places_get_identical_series() -> None:
     assert by_id[RATE_COLUMN][0].to_list() == by_id[RATE_COLUMN][1].to_list()
     assert out["y_index"].n_unique() == 1
     assert out["x_index"].n_unique() == 1
+
+
+def test_timezone_is_carried_through() -> None:
+    """Each row carries the place's zone for the summary layer."""
+    lat, lon = make_coords()
+    places = [
+        a_place(float(lat[0, 0]), float(lon[0, 0]), "A"),
+        a_place(float(lat[2, 3]), float(lon[2, 3]), "B"),
+    ]
+    places[0] = places[0].model_copy(
+        update={"timezone": "America/New_York"}
+    )
+    places[1] = places[1].model_copy(
+        update={"timezone": "America/Denver"}
+    )
+    out = extract_series(
+        places, "2025-07-01", "2025-08-01", opener=flat_opener(0.0, 2)
+    )
+    zones = out.group_by("place_id").agg(pl.col("tz_name").first())
+    assert zones["tz_name"].to_list() == ["America/New_York", "America/Denver"]
+
+
+def test_mixed_timezones_can_be_partitioned_and_converted() -> None:
+    """convert_time_zone takes a string, so mixed zones need a group-by.
+
+    This is the pattern the summary layer must use; a fixed offset
+    would be wrong for half the year.
+    """
+    from datetime import datetime
+
+    frame = pl.DataFrame(
+        {
+            "time": [
+                datetime(2025, 1, 15, 17, tzinfo=UTC),
+                datetime(2025, 7, 15, 17, tzinfo=UTC),
+            ],
+            "tz_name": ["America/New_York"] * 2,
+        }
+    )
+    converted = pl.concat(
+        part.with_columns(local=pl.col("time").dt.convert_time_zone(zone))
+        for (zone,), part in frame.partition_by(
+            "tz_name", as_dict=True
+        ).items()
+    )
+    assert sorted(converted["local"].dt.hour().to_list()) == [12, 13]

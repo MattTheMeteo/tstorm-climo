@@ -5,10 +5,14 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 from pydantic import BaseModel
+from timezonefinder import TimezoneFinder
 
 from tstorm_climo.osm import KIND_TAGS
 
 EARTH_RADIUS_KM = 6371.0
+
+# Fallback zone when a coordinate cannot be resolved to one.
+UTC_TIMEZONE = "UTC"
 
 
 class Place(BaseModel):
@@ -21,6 +25,10 @@ class Place(BaseModel):
         kind: Place kind, e.g. ``golf_course`` or ``beach``.
         lat: Latitude in decimal degrees (WGS84).
         lon: Longitude in decimal degrees (WGS84).
+        timezone: IANA timezone name, e.g. ``America/New_York``.
+            Looked up from the coordinates when the place is built, and
+            carried through the places CSV. Local-time questions (what
+            hour was it when the rain arrived) depend on this.
     """
 
     osm_type: str
@@ -29,6 +37,7 @@ class Place(BaseModel):
     kind: str
     lat: float
     lon: float
+    timezone: str = UTC_TIMEZONE
 
     @property
     def display_name(self) -> str:
@@ -43,6 +52,26 @@ def classify(tags: dict[str, str], kinds: list[str]) -> str | None:
         if tags.get(key) == value:
             return kind
     return None
+
+
+_finder: TimezoneFinder | None = None
+
+
+def timezone_at(lat: float, lon: float) -> str:
+    """Return the IANA timezone name containing a coordinate.
+
+    Uses ``timezonefinder``'s bundled boundary data. Falls back to
+    ``UTC`` rather than raising: a place we cannot place in a timezone
+    is still worth keeping, and UTC is an honest label for "we do not
+    know". Places near a zone boundary can resolve to either side.
+
+    The ``TimezoneFinder`` object loads ~30 MB of boundary data, so it is
+    built once per process and reused.
+    """
+    global _finder
+    if _finder is None:
+        _finder = TimezoneFinder()
+    return _finder.timezone_at(lat=lat, lng=lon) or UTC_TIMEZONE
 
 
 def from_overpass(kinds: list[str], element: dict) -> Place | None:
@@ -69,6 +98,7 @@ def from_overpass(kinds: list[str], element: dict) -> Place | None:
         kind=kind,
         lat=lat,
         lon=lon,
+        timezone=timezone_at(lat, lon),
     )
 
 

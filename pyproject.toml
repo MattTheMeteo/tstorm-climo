@@ -12,6 +12,7 @@ dependencies = [
     "polars>=1.0",
     "pydantic>=2.0",
     "requests>=2.34.2",
+    "timezonefinder>=9.0.0",
     "xarray>=2026.7.0",
 ]
 

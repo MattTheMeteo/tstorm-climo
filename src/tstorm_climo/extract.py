@@ -57,6 +57,7 @@ SCHEMA = {
     "grid_lat": pl.Float64,
     "grid_lon": pl.Float64,
     "snap_distance_km": pl.Float64,
+    "tz_name": pl.String,
 }
 
 
@@ -138,6 +139,13 @@ def _to_frame(
         )
         return pl.Series(attribute, values, dtype=dtype)
 
+    def per_place_str(attribute: str) -> pl.Series:
+        values = np.repeat(
+            np.array([getattr(p, attribute) for p in places], dtype=object),
+            n_times,
+        )
+        return pl.Series(attribute, values, dtype=pl.String)
+
     return pl.DataFrame(
         {
             "place_id": pl.Series(place_ids, dtype=pl.UInt32),
@@ -151,6 +159,7 @@ def _to_frame(
             "grid_lat": per_place("grid_lat", pl.Float64),
             "grid_lon": per_place("grid_lon", pl.Float64),
             "snap_distance_km": per_place("distance_km", pl.Float64),
+            "tz_name": per_place_str("timezone"),
         },
         schema=SCHEMA,
     )

@@ -6,7 +6,14 @@ import polars as pl
 import pytest
 
 from tstorm_climo.osm import KIND_TAGS, build_query
-from tstorm_climo.places import Place, classify, from_overpass, save_csv
+from tstorm_climo.places import (
+    Place,
+    classify,
+    from_overpass,
+    load_csv,
+    save_csv,
+    timezone_at,
+)
 
 BOUNDS = (42.35, -71.2, 42.95, -70.5)
 
@@ -83,3 +90,71 @@ def test_save_csv_roundtrip_sorted(tmp_path) -> None:
     save_csv(places, str(path))
     df = pl.read_csv(str(path))
     assert df["name"].to_list() == ["A", "B", "Y", "Z"]
+
+
+def test_from_overpass_assigns_timezone() -> None:
+    """North Shore places land in America/New_York."""
+    element = {
+        "type": "way",
+        "id": 29689626,
+        "center": {"lat": 42.5849407, "lon": -70.7617890},
+        "tags": {"leisure": "golf_course", "name": "Essex County Club"},
+    }
+    place = from_overpass(["golf_course"], element)
+    assert place.timezone == "America/New_York"
+
+
+def test_timezone_defaults_to_utc_when_not_given() -> None:
+    place = Place(
+        osm_type="way", osm_id=1, kind="beach", lat=42.0, lon=-70.9
+    )
+    assert place.timezone == "UTC"
+
+
+def test_timezone_at_falls_back_to_utc_when_unresolvable(
+    monkeypatch,
+) -> None:
+    """An unresolvable coordinate yields UTC rather than raising.
+
+    Checked by stubbing the finder: timezonefinder covers ocean and
+    polar regions with Etc/GMT zones, so no real coordinate reaches the
+    fallback.
+    """
+    import tstorm_climo.places as places_module
+
+    class Blank:
+        def timezone_at(self, lat: float, lng: float) -> None:
+            return None
+
+    monkeypatch.setattr(places_module, "_finder", Blank())
+    assert places_module.timezone_at(42.0, -70.9) == "UTC"
+
+
+def test_timezone_at_resolves_ocean_to_etc_zone() -> None:
+    """Documents that ocean coordinates still resolve, to Etc/GMT."""
+    assert timezone_at(0.0, 0.0) == "Etc/GMT"
+
+
+def test_timezone_at_differs_across_the_country() -> None:
+    """The lookup is genuinely coordinate-driven, not a constant."""
+    east = timezone_at(42.5849, -70.7618)
+    mountain = timezone_at(39.7392, -104.9903)  # Denver
+    pacific = timezone_at(37.7749, -122.4194)  # San Francisco
+    assert east != mountain != pacific
+    assert mountain == "America/Denver"
+    assert pacific == "America/Los_Angeles"
+
+
+def test_csv_roundtrip_preserves_timezone(tmp_path) -> None:
+    place = Place(
+        osm_type="way",
+        osm_id=1,
+        name="X",
+        kind="golf_course",
+        lat=42.0,
+        lon=-70.9,
+        timezone="America/New_York",
+    )
+    path = tmp_path / "p.csv"
+    save_csv([place], str(path))
+    assert load_csv(str(path))[0].timezone == "America/New_York"

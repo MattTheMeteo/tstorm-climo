@@ -1,111 +1,111 @@
-osm_type,osm_id,name,kind,lat,lon
-way,730033925,Baby Beach,beach,42.5651944,-71.1857415
-node,4119575093,Back Beach,beach,42.6618418,-70.6238289
-way,81994658,Black Beach,beach,42.5787157,-70.731844
-node,358273293,Black Rock Beach,beach,42.4264859,-70.9356042
-way,1126518351,Borggaard Beach,beach,42.4539025,-71.1432621
-way,552449809,Clark Beach,beach,42.7041977,-70.795586
-way,81608812,Coffins Beach,beach,42.659581,-70.7084921
-way,81741680,Collins Cove Beach,beach,42.5277638,-70.8860741
-way,81607325,Dane Street Beach,beach,42.5477948,-70.8694785
-way,81521981,Dead Horse Beach,beach,42.533676,-70.8739082
-way,81606036,Devereaux Beach,beach,42.490013,-70.8568631
-node,6624530980,Folly Cove Shore Dive Site,beach,42.6850892,-70.6421272
-node,358282007,Fort Beach,beach,42.5081772,-70.8431192
-way,81678773,Garmet Beach,beach,42.4975031,-70.8348813
-node,358274436,Good Harbor Beach,beach,42.6195399,-70.6314324
-way,82003862,Graves Beach,beach,42.5736328,-70.7479698
-way,82003791,Gray Beach,beach,42.5762404,-70.7188351
-relation,3375493,Halfmoon Beach,beach,42.6043636,-70.6773468
-way,1427875368,Hampstead Town Beach,beach,42.8876777,-71.1849634
-way,269747704,Hampton Beach,beach,42.909043,-70.807584
-way,1104231143,Hood Pond Community Beach,beach,42.6685181,-70.9557277
-way,549592405,Ipswich Bar,beach,42.701477,-70.7811325
-way,81679335,Josephs Beach,beach,42.4186727,-70.9117033
-way,81468682,Kings Beach,beach,42.4648912,-70.9223932
-node,358274942,Long Beach,beach,42.6301284,-70.6165753
-way,81994605,Lynn Beach,beach,42.4574546,-70.934106
-way,1529374043,Middleton Town Beach,beach,42.6193892,-70.987838
-relation,6376968,Mingo Beach,beach,42.5507366,-70.837936
-way,82004186,Nahant Beach,beach,42.4458556,-70.9376717
-way,1082782061,Newton Town Beach,beach,42.8854248,-71.056416
-node,358274489,Niles Beach,beach,42.5959118,-70.6544293
-way,269747561,North Beach,beach,42.9314952,-70.7950676
-node,358274947,Old Garden Beach,beach,42.6582746,-70.6072483
-relation,1161984,Orient Heights Beach,beach,42.3832118,-71.0087563
-way,1030139593,Patch Beach,beach,42.5493106,-70.8517006
-way,81981673,Pebble Beach,beach,42.6355327,-70.6011558
-relation,14094745,Pico Beach,beach,42.3694192,-70.9836161
-way,269746252,Plaice Cove,beach,42.9438718,-70.7891773
-relation,1851198,Plum Cove Beach,beach,42.6738322,-70.6635919
-way,256125507,Plum Island Beach,beach,42.8134805,-70.8087588
-relation,14335395,Plum Island Beach,beach,42.7590389,-70.7897854
-way,81606280,Preston Beach,beach,42.4781424,-70.8797488
-way,498135559,Revere Beach,beach,42.4188962,-70.9800951
-way,555517637,Salisbury Beach,beach,42.8467615,-70.8143696
-way,273890586,Seabrook Beach,beach,42.8824196,-70.8135663
-relation,1810656,Shannon Beach,beach,42.4399286,-71.1460764
-way,86295288,Short Beach,beach,42.3922762,-70.9807443
-way,81982023,Singing Beach,beach,42.567971,-70.7605333
-way,269747723,South Beach,beach,42.8987403,-70.8109758
-way,283700559,Steep Hill Beach,beach,42.6917387,-70.7844267
-node,5732982601,Stevens Pond Beach,beach,42.6890634,-71.1070369
-way,81522737,Stoney Point,beach,42.6762214,-70.758896
-node,358275655,Stony Beach,beach,42.4277631,-70.916221
-way,81607226,Stramski's Beach,beach,42.5143811,-70.8661669
-way,876291390,The Knobbs,beach,42.7312273,-70.7982734
-way,81606073,West Beach,beach,42.5573332,-70.8123556
-node,12379118857,Whales Beach,beach,42.4636276,-70.9053114
-way,81743161,Willow Ave Beach,beach,42.5101858,-70.8879845
-way,81522127,Wingaersheek Beach,beach,42.6501467,-70.6857043
-way,86295404,Yirrel Beach,beach,42.3637559,-70.9684786
-way,301867063,Amesbury Golf and Country Club,golf_course,42.8615264,-70.9121
-way,264546240,Andover Country Club,golf_course,42.6687485,-71.1705032
-way,320123435,Apple Hill Golf Club,golf_course,42.9221775,-70.9821994
-way,443670941,Atkinson Resort & Country Club,golf_course,42.8193565,-71.176423
-way,29699118,Bass Rocks Golf Club,golf_course,42.6089237,-70.6382784
-way,29859064,Bear Hill Golf Club,golf_course,42.5004855,-71.0968228
-way,29868514,Bellevue Golf Club,golf_course,42.46629,-71.0476643
-relation,18281554,Belmont Country Club,golf_course,42.4117637,-71.2017589
-way,29690080,Beverly Golf & Tennis Club,golf_course,42.5611245,-70.897848
-way,29830594,Black Swan Country Club,golf_course,42.7145144,-71.011339
-relation,4135994,Bradford Country Club,golf_course,42.7511736,-71.0683404
-way,29691477,Cape Ann Golf Course,golf_course,42.6495685,-70.7792444
-way,29831267,Cedar Glen Golf Course,golf_course,42.4947331,-71.0298843
-relation,17470795,Crystal Lake Golf Club,golf_course,42.8033952,-71.1389105
-way,29689626,Essex County Club,golf_course,42.5849407,-70.761789
-way,29818542,Far Corner Golf,golf_course,42.7310755,-71.0863842
-way,27394774,Fresh Pond Golf Course,golf_course,42.3856725,-71.1554815
-relation,12406099,Gannon Municipal Golf Course,golf_course,42.4871077,-70.9737774
-way,1247362278,Garrison Par 3 Golf Center,golf_course,42.7952738,-71.1121625
-way,1231783445,Granite Fields Golf Club,golf_course,42.8623831,-71.0815657
-way,29830233,Hillview Golf Course,golf_course,42.593339,-71.1095394
-way,264546248,Indian Ridge Golf Club,golf_course,42.6426026,-71.1673794
-relation,4143635,Ipswich Country Club,golf_course,42.6960234,-70.900952
-way,29695520,Kernwood Country Club,golf_course,42.5397258,-70.9038705
-way,84508329,King Rail Golf Course,golf_course,42.5219113,-71.0367215
-relation,8524122,Meadow Brook Golf Club,golf_course,42.5456643,-71.1268695
-way,129032882,Meadow at Peabody Golf Course,golf_course,42.5112314,-70.935714
-way,844843860,Merrimack Valley Golf Club,golf_course,42.7537848,-71.1802522
-way,29689937,Myopia Hunt Club,golf_course,42.6096515,-70.8571614
-relation,16326516,New Meadows Golf Club,golf_course,42.6646788,-70.9256956
-way,1273169365,North Andover Country Club,golf_course,42.6916353,-71.0895277
-way,310806425,Northfields Golf Course,golf_course,42.7992692,-71.1278835
-way,498393894,Oakley Country Club,golf_course,42.375053,-71.1713342
-way,29691682,Olde Salem Greens,golf_course,42.5015297,-70.9084613
-way,29690912,Ould Newbury Golf Club,golf_course,42.7527689,-70.8922745
-way,29819420,Reedy Meadow Golf Course,golf_course,42.5339882,-71.0466754
-way,251858105,Renaissance Golf Club,golf_course,42.7773339,-71.0369154
-way,295320134,Rockport Golf Club,golf_course,42.6477953,-70.6060011
-way,468507206,Rowley Country Club,golf_course,42.7193758,-70.9302785
-way,29742562,Sagamore Spring Golf Club,golf_course,42.5595167,-71.0398111
-way,701973533,Salem Country Club,golf_course,42.5327038,-70.9699236
-way,29695320,Tedesco Country Club,golf_course,42.4805609,-70.8991694
-way,310313563,The Course at Tree House,golf_course,42.5968594,-71.2023911
-relation,8494006,The Golf Club at Turner Hill,golf_course,42.6657988,-70.8818467
-relation,17508585,Thomson Country Club,golf_course,42.5804933,-71.0387481
-way,29830185,Unicorn Golf Course,golf_course,42.4866079,-71.1117585
-way,29695004,Wenham Country Club,golf_course,42.5990122,-70.8835865
-way,29818882,Winchester Country Club,golf_course,42.4382466,-71.1627319
-way,29691964,Winthrop Golf Club,golf_course,42.3770531,-70.9765977
-way,66508945,Woburn Country Club,golf_course,42.4650805,-71.1638832
+osm_type,osm_id,name,kind,lat,lon,timezone
+way,730033925,Baby Beach,beach,42.5651944,-71.1857415,America/New_York
+node,4119575093,Back Beach,beach,42.6618418,-70.6238289,America/New_York
+way,81994658,Black Beach,beach,42.5787157,-70.731844,America/New_York
+node,358273293,Black Rock Beach,beach,42.4264859,-70.9356042,America/New_York
+way,1126518351,Borggaard Beach,beach,42.4539025,-71.1432621,America/New_York
+way,552449809,Clark Beach,beach,42.7041977,-70.795586,America/New_York
+way,81608812,Coffins Beach,beach,42.659581,-70.7084921,America/New_York
+way,81741680,Collins Cove Beach,beach,42.5277638,-70.8860741,America/New_York
+way,81607325,Dane Street Beach,beach,42.5477948,-70.8694785,America/New_York
+way,81521981,Dead Horse Beach,beach,42.533676,-70.8739082,America/New_York
+way,81606036,Devereaux Beach,beach,42.490013,-70.8568631,America/New_York
+node,6624530980,Folly Cove Shore Dive Site,beach,42.6850892,-70.6421272,America/New_York
+node,358282007,Fort Beach,beach,42.5081772,-70.8431192,America/New_York
+way,81678773,Garmet Beach,beach,42.4975031,-70.8348813,America/New_York
+node,358274436,Good Harbor Beach,beach,42.6195399,-70.6314324,America/New_York
+way,82003862,Graves Beach,beach,42.5736328,-70.7479698,America/New_York
+way,82003791,Gray Beach,beach,42.5762404,-70.7188351,America/New_York
+relation,3375493,Halfmoon Beach,beach,42.6043636,-70.6773468,America/New_York
+way,1427875368,Hampstead Town Beach,beach,42.8876777,-71.1849634,America/New_York
+way,269747704,Hampton Beach,beach,42.909043,-70.807584,America/New_York
+way,1104231143,Hood Pond Community Beach,beach,42.6685181,-70.9557277,America/New_York
+way,549592405,Ipswich Bar,beach,42.701477,-70.7811325,America/New_York
+way,81679335,Josephs Beach,beach,42.4186727,-70.9117033,America/New_York
+way,81468682,Kings Beach,beach,42.4648912,-70.9223932,America/New_York
+node,358274942,Long Beach,beach,42.6301284,-70.6165753,America/New_York
+way,81994605,Lynn Beach,beach,42.4574546,-70.934106,America/New_York
+way,1529374043,Middleton Town Beach,beach,42.6193892,-70.987838,America/New_York
+relation,6376968,Mingo Beach,beach,42.5507366,-70.837936,America/New_York
+way,82004186,Nahant Beach,beach,42.4458556,-70.9376717,America/New_York
+way,1082782061,Newton Town Beach,beach,42.8854248,-71.056416,America/New_York
+node,358274489,Niles Beach,beach,42.5959118,-70.6544293,America/New_York
+way,269747561,North Beach,beach,42.9314952,-70.7950676,America/New_York
+node,358274947,Old Garden Beach,beach,42.6582746,-70.6072483,America/New_York
+relation,1161984,Orient Heights Beach,beach,42.3832118,-71.0087563,America/New_York
+way,1030139593,Patch Beach,beach,42.5493106,-70.8517006,America/New_York
+way,81981673,Pebble Beach,beach,42.6355327,-70.6011558,America/New_York
+relation,14094745,Pico Beach,beach,42.3694192,-70.9836161,America/New_York
+way,269746252,Plaice Cove,beach,42.9438718,-70.7891773,America/New_York
+relation,1851198,Plum Cove Beach,beach,42.6738322,-70.6635919,America/New_York
+way,256125507,Plum Island Beach,beach,42.8134805,-70.8087588,America/New_York
+relation,14335395,Plum Island Beach,beach,42.7590389,-70.7897854,America/New_York
+way,81606280,Preston Beach,beach,42.4781424,-70.8797488,America/New_York
+way,498135559,Revere Beach,beach,42.4188962,-70.9800951,America/New_York
+way,555517637,Salisbury Beach,beach,42.8467615,-70.8143696,America/New_York
+way,273890586,Seabrook Beach,beach,42.8824196,-70.8135663,America/New_York
+relation,1810656,Shannon Beach,beach,42.4399286,-71.1460764,America/New_York
+way,86295288,Short Beach,beach,42.3922762,-70.9807443,America/New_York
+way,81982023,Singing Beach,beach,42.567971,-70.7605333,America/New_York
+way,269747723,South Beach,beach,42.8987403,-70.8109758,America/New_York
+way,283700559,Steep Hill Beach,beach,42.6917387,-70.7844267,America/New_York
+node,5732982601,Stevens Pond Beach,beach,42.6890634,-71.1070369,America/New_York
+way,81522737,Stoney Point,beach,42.6762214,-70.758896,America/New_York
+node,358275655,Stony Beach,beach,42.4277631,-70.916221,America/New_York
+way,81607226,Stramski's Beach,beach,42.5143811,-70.8661669,America/New_York
+way,876291390,The Knobbs,beach,42.7312273,-70.7982734,America/New_York
+way,81606073,West Beach,beach,42.5573332,-70.8123556,America/New_York
+node,12379118857,Whales Beach,beach,42.4636276,-70.9053114,America/New_York
+way,81743161,Willow Ave Beach,beach,42.5101858,-70.8879845,America/New_York
+way,81522127,Wingaersheek Beach,beach,42.6501467,-70.6857043,America/New_York
+way,86295404,Yirrel Beach,beach,42.3637559,-70.9684786,America/New_York
+way,301867063,Amesbury Golf and Country Club,golf_course,42.8615264,-70.9121,America/New_York
+way,264546240,Andover Country Club,golf_course,42.6687485,-71.1705032,America/New_York
+way,320123435,Apple Hill Golf Club,golf_course,42.9221775,-70.9821994,America/New_York
+way,443670941,Atkinson Resort & Country Club,golf_course,42.8193565,-71.176423,America/New_York
+way,29699118,Bass Rocks Golf Club,golf_course,42.6089237,-70.6382784,America/New_York
+way,29859064,Bear Hill Golf Club,golf_course,42.5004855,-71.0968228,America/New_York
+way,29868514,Bellevue Golf Club,golf_course,42.46629,-71.0476643,America/New_York
+relation,18281554,Belmont Country Club,golf_course,42.4117637,-71.2017589,America/New_York
+way,29690080,Beverly Golf & Tennis Club,golf_course,42.5611245,-70.897848,America/New_York
+way,29830594,Black Swan Country Club,golf_course,42.7145144,-71.011339,America/New_York
+relation,4135994,Bradford Country Club,golf_course,42.7511736,-71.0683404,America/New_York
+way,29691477,Cape Ann Golf Course,golf_course,42.6495685,-70.7792444,America/New_York
+way,29831267,Cedar Glen Golf Course,golf_course,42.4947331,-71.0298843,America/New_York
+relation,17470795,Crystal Lake Golf Club,golf_course,42.8033952,-71.1389105,America/New_York
+way,29689626,Essex County Club,golf_course,42.5849407,-70.761789,America/New_York
+way,29818542,Far Corner Golf,golf_course,42.7310755,-71.0863842,America/New_York
+way,27394774,Fresh Pond Golf Course,golf_course,42.3856725,-71.1554815,America/New_York
+relation,12406099,Gannon Municipal Golf Course,golf_course,42.4871077,-70.9737774,America/New_York
+way,1247362278,Garrison Par 3 Golf Center,golf_course,42.7952738,-71.1121625,America/New_York
+way,1231783445,Granite Fields Golf Club,golf_course,42.8623831,-71.0815657,America/New_York
+way,29830233,Hillview Golf Course,golf_course,42.593339,-71.1095394,America/New_York
+way,264546248,Indian Ridge Golf Club,golf_course,42.6426026,-71.1673794,America/New_York
+relation,4143635,Ipswich Country Club,golf_course,42.6960234,-70.900952,America/New_York
+way,29695520,Kernwood Country Club,golf_course,42.5397258,-70.9038705,America/New_York
+way,84508329,King Rail Golf Course,golf_course,42.5219113,-71.0367215,America/New_York
+relation,8524122,Meadow Brook Golf Club,golf_course,42.5456643,-71.1268695,America/New_York
+way,129032882,Meadow at Peabody Golf Course,golf_course,42.5112314,-70.935714,America/New_York
+way,844843860,Merrimack Valley Golf Club,golf_course,42.7537848,-71.1802522,America/New_York
+way,29689937,Myopia Hunt Club,golf_course,42.6096515,-70.8571614,America/New_York
+relation,16326516,New Meadows Golf Club,golf_course,42.6646788,-70.9256956,America/New_York
+way,1273169365,North Andover Country Club,golf_course,42.6916353,-71.0895277,America/New_York
+way,310806425,Northfields Golf Course,golf_course,42.7992692,-71.1278835,America/New_York
+way,498393894,Oakley Country Club,golf_course,42.375053,-71.1713342,America/New_York
+way,29691682,Olde Salem Greens,golf_course,42.5015297,-70.9084613,America/New_York
+way,29690912,Ould Newbury Golf Club,golf_course,42.7527689,-70.8922745,America/New_York
+way,29819420,Reedy Meadow Golf Course,golf_course,42.5339882,-71.0466754,America/New_York
+way,251858105,Renaissance Golf Club,golf_course,42.7773339,-71.0369154,America/New_York
+way,295320134,Rockport Golf Club,golf_course,42.6477953,-70.6060011,America/New_York
+way,468507206,Rowley Country Club,golf_course,42.7193758,-70.9302785,America/New_York
+way,29742562,Sagamore Spring Golf Club,golf_course,42.5595167,-71.0398111,America/New_York
+way,701973533,Salem Country Club,golf_course,42.5327038,-70.9699236,America/New_York
+way,29695320,Tedesco Country Club,golf_course,42.4805609,-70.8991694,America/New_York
+way,310313563,The Course at Tree House,golf_course,42.5968594,-71.2023911,America/New_York
+relation,8494006,The Golf Club at Turner Hill,golf_course,42.6657988,-70.8818467,America/New_York
+relation,17508585,Thomson Country Club,golf_course,42.5804933,-71.0387481,America/New_York
+way,29830185,Unicorn Golf Course,golf_course,42.4866079,-71.1117585,America/New_York
+way,29695004,Wenham Country Club,golf_course,42.5990122,-70.8835865,America/New_York
+way,29818882,Winchester Country Club,golf_course,42.4382466,-71.1627319,America/New_York
+way,29691964,Winthrop Golf Club,golf_course,42.3770531,-70.9765977,America/New_York
+way,66508945,Woburn Country Club,golf_course,42.4650805,-71.1638832,America/New_York

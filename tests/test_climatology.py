@@ -45,9 +45,10 @@ def test_summarize_counts_wet_grid_points() -> None:
     )
     ds = fake_precipitation(rate, times)
     climo = Climatology()
-    events = climo.summarize(
+    precipitation = load_precipitation(
         "2025-07-15T17", "2025-07-15T18", opener=make_opener(ds)
     )
+    events = climo.summarize(precipitation)
     assert events == {
         "2025-07-15T17:00:00": 1,
         "2025-07-15T18:00:00": 3,

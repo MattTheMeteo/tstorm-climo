@@ -45,6 +45,27 @@ uv run tstorm-climo fetch-places \
 `places_north_shore.csv` in this repository is a committed example built
 that way (50 golf courses, 60 named beaches).
 
+Rank places by how often it rains on them — the Chuck leaderboard:
+
+```sh
+uv run tstorm-climo rain-report \
+  --places places_north_shore.csv \
+  --start 2018-01-01 --end 2026-01-01 \
+  --kind golf_course
+```
+
+Useful flags: `--month 6` restricts to one calendar month in local time,
+`--threshold` sets the wet rate in mm/h (default 0.5), and `--output
+report.parquet` writes the table with a `.meta.json` sidecar recording
+the archive, date range, threshold, reliability figure, and the CC-BY /
+ODbL attribution — so a notebook or web app can reuse the artifact
+without re-deriving its provenance.
+
+The report always prints its **split-half reliability** alongside the
+table. Read it before trusting the ordering: at the default threshold it
+is around 0.41, which means neighbouring courses are separated mostly by
+noise. Places sharing a grid node are marked `tied`.
+
 ## Development
 
 ```sh

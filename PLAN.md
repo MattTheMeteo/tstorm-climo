@@ -65,7 +65,8 @@ already caused one wrong threshold in this project. So:
 | `tstorm_climo/climatology.py` | `Climatology.summarize(precipitation)` | Per hourly analysis step, counts CONUS-wide grid points above a threshold (default 0.05 mm/h). Takes an **already-loaded** dataset — I/O lives in `hrrr.load_precipitation`, so the class no longer opens the archive. Coarse-grained (whole dataset, no spatial subset); a global sanity check, not a per-place result. |
 | `tstorm_climo/extract.py` | `extract_series(places, start, end, grid=, opener=)` | Long-format per-place hourly series (`place_id, time, precipitation_mm_per_hour, valid, y_index, x_index, grid_lat, grid_lon, snap_distance_km, tz_name`). One contiguous block read, then gather in memory. Slices **before** converting units. Sorted by place then time; the time column resets per place and is not globally sorted. |
 | `tstorm_climo/summarize.py` | `place_summary`, `by_local_month`, `by_local_hour`, `scorecard`, `split_half_reliability` | Per-place climatology in local time. Default threshold 0.5 mm/h. No unit conversion — input is already mm/h. |
-| `tstorm_climo/cli.py` | `summarize --start/--end`, `fetch-places --bbox/--kind/--named-only/--no-dedupe/--output` | argparse subcommands. |
+| `tstorm_climo/provenance.py` | `build_metadata`, `write_metadata`, `format_caveats` | JSON sidecar recording archive, date range, threshold, reliability and the CC-BY / ODbL attribution. Makes a published number reproducible and keeps licence obligations in one place. |
+| `tstorm_climo/cli.py` | `rain-report --places/--start/--end/--threshold/--kind/--month/--output`, `summarize --start/--end`, `fetch-places --bbox/--kind/--named-only/--no-dedupe/--output` | argparse subcommands. `rain-report` prints the leaderboard, its reliability figure and caveats, and optionally writes parquet + sidecar. |
 
 Committed data:
 - `places_north_shore.csv` — 50 golf courses + 60 named beaches for the
@@ -231,8 +232,17 @@ injected `opener`; no network in the fast test suite.
    and say plainly that a 3 km analysis archive cannot resolve these
    courses. This is the most important finding in the project so far
    and outranks the point differences.
-4. **CLI**: `rain-report --places places.csv --start/--end`, printing a
-   ranked table (e.g. driest-to-wettest June at each course).
+4. ~~**CLI**: `rain-report`~~ **DONE.** Prints the ranked table
+   (driest first), with `--month N` for a local-time month slice,
+   `--threshold` in mm/h, `--kind` to filter, and `--output` for parquet
+   or CSV plus a `.meta.json` provenance sidecar.
+   - The **reliability figure is always printed with the table**, along
+     with the caveats and both licence attributions. A leaderboard
+     without it is misleading, so it is not optional output.
+   - This is the producer of the artifact a future notebook or web app
+     consumes: compute once, read the parquet, inherit the provenance.
+     It is deliberately *not* a caching layer (that stayed dropped) —
+     parquet-from-CLI is less machinery and is enough for our needs.
 
 ### Phase 2: Event-aware climatology
 

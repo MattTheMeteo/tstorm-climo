@@ -61,13 +61,14 @@ already caused one wrong threshold in this project. So:
 
 | module | what exists | notes |
 | --- | --- | --- |
-| `tstorm_climo/osm.py` | `KIND_TAGS`, `build_query(bbox, kinds)`, `run_query(query)` | Overpass API. Kinds map to OSM tags (`golf_course` → `leisure=golf_course`, `beach` → `natural=beach`). Body sent with a descriptive User-Agent (Overpass 406-rejects the default `requests` UA). Retries with backoff. |
+| `tstorm_climo/osm.py` | `KIND_TAGS`, `build_query(bbox, kinds)`, `run_query(query)` | Overpass API via **httpx** (was `requests`). Kinds map to OSM tags (`golf_course` → `leisure=golf_course`, `beach` → `natural=beach`). Body sent with a descriptive User-Agent (Overpass 406-rejects the default client UA). Retries with fixed backoff on both HTTP error statuses **and** transport errors (`httpx.HTTPError`), because a reset or read timeout on this shared service is transient and must not abort a long build. Every attempt carries an explicit `timeout` (default 120 s) — without one, a hung connection blocks the build indefinitely. |
 | `tstorm_climo/places.py` | `Place` (pydantic), `classify`, `from_overpass`, `deduplicate`, `haversine_km`, `to_polars`, `save_csv`, `load_csv` | `Place.place_key` is the stable source-qualified OSM identity (`osm:{type}:{id}`). Ways/relations currently use Overpass centers and their full geometry is not retained; nodes use their position. Kind inferred from the element's own tags (Overpass does not say which selector matched). Dedupe collapses same-named places within 1 km (node+way duplicates) while keeping geographically distinct same-named places. |
 | `tstorm_climo/climatology.py` | `summarize_grid(precipitation)` | Per hourly analysis step, counts CONUS-wide grid points above a threshold (default 0.05 mm/h). Takes an **already-loaded** dataset — I/O lives in `hrrr.load_precipitation`. Coarse-grained (whole dataset, no spatial subset); a global sanity check, not a per-place result. |
 | `tstorm_climo/extract.py` | `extract_series(places, start, end, grid=, opener=)` | Long-format per-place hourly series (`place_key, time, precipitation_mm_per_hour, valid, y_index, x_index, grid_lat, grid_lon, snap_distance_km, tz_name`). `place_key` is independent of input order; summaries join by key. One contiguous block read, then gather in memory. Slices **before** converting units. Sorted by input place order, then time; the time column resets per place and is not globally sorted. |
+| `tstorm_climo/artifacts.py` | `build_hourly_observation_artifact(places, start, end, output_dir)` | Writes an immutable output directory containing `observations.parquet`, the exact `places.parquet` catalog used, and `manifest.json`. Current variable is `rain_rate` in mm/h; no threshold is applied. Includes a canonical place-catalog hash and valid/invalid row counts. Existing output directories are not overwritten. |
 | `tstorm_climo/summarize.py` | `place_summary`, `by_local_month`, `by_local_hour`, `scorecard`, `split_half_reliability` | Per-place climatology in local time. Default threshold 0.05 mm/h, shared with `summarize_grid`. No unit conversion — input is already mm/h. |
 | `tstorm_climo/provenance.py` | `build_metadata`, `write_metadata`, `format_caveats` | JSON sidecar recording archive, date range, threshold, reliability and the CC-BY / ODbL attribution. Makes a published number reproducible and keeps licence obligations in one place. |
-| `tstorm_climo/cli.py` | `rain-report --places/--start/--end/--threshold/--kind/--month/--output`, `summarize --start/--end`, `fetch-places --bbox/--kind/--named-only/--no-dedupe/--output` | argparse subcommands. `rain-report` prints the leaderboard, its reliability figure and caveats, and optionally writes a **derived summary** parquet + sidecar. This is useful for fixed reports, but is not the hourly artifact needed to recalculate arbitrary user-selected periods. |
+| `tstorm_climo/cli.py` | `build-observations --places/--start/--end/--output`, `rain-report --places/--start/--end/--threshold/--kind/--month/--output`, `summarize --start/--end`, `fetch-places --bbox/--kind/--named-only/--no-dedupe/--output` | argparse subcommands. `build-observations` creates the reusable hourly rain artifact. `rain-report` prints the leaderboard, reliability figure, and caveats, and optionally writes a **derived summary** parquet + sidecar. |
 
 Committed data:
 - `places_north_shore.csv` — 50 golf courses + 60 named beaches for the
@@ -76,8 +77,8 @@ Committed data:
 
 Tooling: `uv` + Python 3.14, `pytest`, `ruff` (E/F/I/UP/B/SIM).
 Dependencies: `dynamical-catalog`, `xarray`, `polars`, `pydantic`,
-`requests`. Deliberately NOT used: GRIB2/cfgrib, runtime OSM fetches in
-the analysis path.
+`tzfpy`, `httpx`. Deliberately NOT used: GRIB2/cfgrib, runtime OSM
+fetches in the analysis path.
 
 Testing strategy: unit tests run on synthetic xarray datasets via an
 injected `opener`; no network in the fast test suite.
@@ -170,8 +171,8 @@ injected `opener`; no network in the fast test suite.
      string, not a column. Verified against a fixed-offset model: 0
      mismatches in summer (EDT, UTC−4) and 0 in winter (EST, UTC−5).
 
-   **First results, 50 courses × 2018–2026, 0.5 mm/h (12.9 s end to
-   end):**
+   **Exploratory results at 0.5 mm/h, 50 courses × 2018–2026 (12.9 s
+   end to end; 0.5 mm/h is not the current default):**
    - Overall wet fraction spans only **4.9%–5.4%** across all 50
      courses. The spread is ~5.8 standard errors (SE ≈ 0.084 pp with
      ~70k valid hours), so it is statistically real — but see the
@@ -221,7 +222,8 @@ injected `opener`; no network in the fast test suite.
    | `rate > 0.01 mm/h` | −0.10 |
    | `rate > 0` | 0.13 |
 
-   So the between-course spread is **substantially sampling noise**, and
+   At this tested 0.5 mm/h threshold, the between-course spread is
+   **substantially sampling noise**, and
    the apparent 4.9%–5.4% range is mostly which eight years you happened
    to look at. `crain == 1` is the most stable of these, and
    `rate > 0.5` is moderately stable; `rate > 0` is no better than a
@@ -261,7 +263,9 @@ injected `opener`; no network in the fast test suite.
    year is the harshest split; adjacent-year splits would look better
    and would overstate reproducibility.
 
-   **Design consequence for the visualization:** lead with the all-year
+    These reliability figures describe the tested threshold and periods;
+    the CLI recomputes reliability for each selected threshold/date range.
+    **Design consequence for the visualization:** lead with the all-year
    view (r = 0.41) labelled low-confidence; present June as a
    *distribution* of wet hours rather than a ranking; and look for
    stable differences at a **coarser grouping** (regions, or the wet
@@ -312,22 +316,25 @@ injected `opener`; no network in the fast test suite.
 
 ### Phase 3: Offline hourly observation artifacts
 
-9. **Build hourly artifacts for interactive queries.** Add a CLI/build
-   function that extracts selected places, variables, and date ranges from
-   the archive and writes normalized hourly observations to Parquet. This
-   is a versioned, read-only input dataset for the app—not a runtime cache
-   and not the `rain-report` summary output. Store at least
-   `place_key, time_utc, variable, value, valid`; keep place metadata in a
-   companion versioned artifact. Do not bake a wet threshold into the
-   measurements so the app can apply its selected threshold.
-10. **Partition and describe the artifact.** Start with one region and
-    partition by variable and year if useful for filtered reads. Include a
-    manifest with dataset/source field, normalized units, date coverage,
-    place-catalog version or hash, build time/code version, and attribution.
-    Preserve `place_key` and validity information end-to-end. Report the
-    observed coverage so missing data is never rendered as dry weather.
-    The place-catalog version must identify the exact synchronized place
-    and geometry snapshot used for the build.
+9. **Build hourly artifacts for interactive queries.** **DONE for rain v1.**
+   `build-observations --places/--start/--end/--output` calls
+   `extract_series` and writes a new output directory containing
+   `observations.parquet`, `places.parquet`, and `manifest.json`. The
+   observation schema includes `place_key, time_utc, variable, value,
+   valid` plus grid-sampling details. The current builder supports only
+   `rain_rate`; it does not apply a wet threshold. The output directory is
+   not overwritten, so each build is an immutable artifact bundle. Add
+   additional variables after their source fields and units are validated.
+10. **Harden and describe the artifact.** The initial manifest records the
+    dataset/source field, normalized units, requested and observed date
+    range, place-catalog content hash, build time, row counts, valid fraction,
+    and attribution. Keep `place_key` and validity information end-to-end.
+    Follow-up: add software/code version and assess completeness against the
+    expected hourly timeline, since a missing timestamp entirely is not
+    currently counted in `valid_fraction`. Start with one region and one
+    Parquet file; partition by variable/year only if filtered reads need it.
+    The place-catalog hash identifies the exact attributes used. Geometry is
+    not yet collected; when added, it must join the same catalog release.
     - **Place catalog refresh is an offline build step.** Query Overpass
       manually or on a low-frequency schedule, never in response to app
       interactions. For broad coverage, fetch bounded regions/tiles in
@@ -342,15 +349,17 @@ injected `opener`; no network in the fast test suite.
       place; multipolygons remain one feature). The current importer only
       requests centers; fetching and retaining full way/relation geometry
       is a planned change, not current behavior.
-    - Each release has an immutable version directory containing both
-      tables plus a manifest (retrieval time, query/region coverage, tag
-      mapping, attribution, and checksums). Validate both files and their
-      key coverage before publishing. Update a small `latest` manifest or
-      pointer **only after** the full release is ready; never overwrite the
-      two live files independently. Retain older releases for rollback and
-      provenance even though users see the latest release by default.
-      Local files are sufficient initially; use S3/object storage when the
-      hosted app needs shared durable artifacts.
+    - The observation builder currently writes the place table and rain
+      series together in a new output directory, but does not fetch geometry
+      or manage a `latest` pointer. For catalog refreshes, each release should
+      have an immutable version directory containing both tables plus a
+      manifest (retrieval time, query/region coverage, tag mapping,
+      attribution, and checksums). Validate key coverage before publishing.
+      Update a small `latest` pointer **only after** the full release is
+      ready; never overwrite the two live files independently. Retain older
+      releases for rollback and provenance even though users see the latest
+      release by default. Local files are sufficient initially; use
+      S3/object storage when the hosted app needs shared durable artifacts.
 11. **Keep archive I/O out of app interactions.** Build or refresh artifacts
     separately (manual refresh is adequate initially). The app must not
     call HRRR or Overpass when a user changes a selector. The measured
@@ -366,29 +375,46 @@ injected `opener`; no network in the fast test suite.
      dynamical.org from NOAA Open Data Dissemination archives") plus OSM
      attribution (ODbL) on any published notebook/site.
 
-### Phase 4: Interactive server-side marimo app
+### Phase 4: Interactive marimo-studio app
 
 14. **Factor a reusable report/query function.** Accept observation data,
     selected `place_key`/attraction kind, variable, date range, and any
     supported summary options; return tables and plot-ready data. Keep it
     independent of marimo and network I/O so the CLI, tests, and app share
     the same analysis behavior.
-15. **Build the reactive marimo UI.** Provide controls for attraction kind,
+15. **Build the interactive view with marimo-studio.** Keep analysis cells
+    and reusable Python functions in the notebook/package; put presentation
+    code in a separate Studio view. Start with the simplest frontend that
+    meets the need (plain HTML is sufficient); use React/Svelte only if the
+    interaction or design warrants it. Provide controls for attraction kind,
     place, variable, and custom start/end dates bounded by artifact coverage.
     Resolve the latest complete place-catalog release when the app starts
-    (or reloads it); keep one consistent catalog snapshot for each running
-    app session. Filter the hourly artifact server-side, then call the
-    reusable summary functions. Show coverage, units, source, sampling
-    method, reliability where applicable, and the caveats alongside
-    results. Initial views: map, period totals/frequency, monthly and
-    local-hour climatology, and comparisons across selected places.
-16. **Host as a server-side app.** Run a small persistent marimo process
-    with read-only access to versioned artifacts. Reactive controls may
-    recompute summaries, but must not trigger HRRR downloads or Overpass
-    queries. A static export is for fixed reports only. Start with one app
-    process; add a separate API, job queue, or multi-user caching only if
-    actual concurrency or calculation time requires it.
-17. **Publish reproducibly while serving the latest catalog.** Display the
+    (or reloads it); keep one consistent catalog snapshot per app session.
+    Filter hourly artifacts server-side and call the reusable summary
+    functions. Show coverage, units, source, sampling method, reliability
+    where applicable, and caveats. Initial views: map, period totals/
+    frequency, monthly and local-hour climatology, and place comparisons.
+16. **Use Studio's live Python server runtime.** Custom date ranges are an
+    effectively unbounded input space, so a finite Prepared/zero-Python
+    export cannot precompute every result. Browser/WASM execution would
+    require exposing relevant data and running Python-compatible
+    dependencies in each visitor's browser; keep the initial app
+    server-side instead. Studio is the view/presentation
+    tooling, not the hosting service: serve it with `marimo run` on a
+    container-capable host ([Studio run/share guide](https://marimo-team.github.io/marimo-studio/guide/run-and-share/),
+    [marimo deployment guide](https://docs.marimo.io/guides/deploying/)).
+    Prepared static exports remain an option for fixed reports or a small,
+    explicitly enumerated set of choices.
+17. **Keep app runtime read-only and independent of live data APIs.** Give
+    the marimo server read-only access to prepared artifacts; keep any S3
+    credentials on the server, never in the browser view. Reactive controls
+    can recompute summaries but must not trigger HRRR downloads or Overpass
+    queries. Start with one app process and measure memory/latency before
+    adding APIs, job queues, or shared caching.
+18. **Pin the app environment.** Add marimo and marimo-studio as app-only
+    dependencies rather than requirements for the core CLI. Pin Studio and
+    any view-provider versions because the project is new and evolving.
+19. **Publish reproducibly while serving the latest catalog.** Display the
     exact catalog and observation-artifact versions resolved by the app,
     with their manifest/provenance. When a new catalog release is published,
     advance `latest` after validation and reload/restart the app cleanly;
@@ -397,18 +423,18 @@ injected `opener`; no network in the fast test suite.
 
 ### Phase 5: Generalizations
 
-18. **More attraction kinds and regions.** Integrate and QA the existing
+20. **More attraction kinds and regions.** Integrate and QA the existing
     golf-course and beach catalogs in the app; add ski-area catalogs and
     check OSM tag coverage. Preserve geometry/source identity when possible.
     Treat representative-point sampling as an explicit initial method;
     large or elongated attractions may need footprint summaries. Continue
     to support bbox-driven place catalogs and show region coverage.
-19. **Use retained geometry when justified.** Once geometry is available,
+21. **Use retained geometry when justified.** Once geometry is available,
     draw attraction outlines and assess grid-cell/footprint summaries for
     large beaches and ski areas. Keep the representative point for simple
     lookup and fallback. Evaluate the benefit against HRRR's 3 km resolution
     before making footprint aggregation the default.
-20. **More weather variables and sources.** Add a variable only after its
+22. **More weather variables and sources.** Add a variable only after its
     source field, units, temporal meaning, and summary interpretation are
     validated. Keep the user-facing variable registry separate from OSM
     attraction kinds. Add other datasets only when a concrete coverage or

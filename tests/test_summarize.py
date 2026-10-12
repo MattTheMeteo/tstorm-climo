@@ -51,12 +51,10 @@ def make_series(
     from datetime import datetime, timedelta
 
     base = datetime.fromisoformat(f"{day}T00:00").replace(tzinfo=UTC)
-    times = [
-        base + timedelta(hours=h) for h in range(start_hour, start_hour + n_hours)
-    ]
+    times = [base + timedelta(hours=h) for h in range(start_hour, start_hour + n_hours)]
     zone_list = zones or ["America/New_York"] * n_places
 
-    rows = {
+    rows: dict[str, list] = {
         "place_key": [],
         TIME_COLUMN: [],
         RATE_COLUMN: [],
@@ -74,9 +72,7 @@ def make_series(
             rows["place_key"].append(key)
             rows[TIME_COLUMN].append(times[h])
             rows[RATE_COLUMN].append(rates[p][h])
-            rows[VALID_COLUMN].append(
-                True if valid is None else valid[p][h]
-            )
+            rows[VALID_COLUMN].append(True if valid is None else valid[p][h])
             rows["y_index"].append(p)
             rows["x_index"].append(0)
             rows["grid_lat"].append(42.0)
@@ -134,9 +130,7 @@ def test_place_summary_counts_wet_hours_and_fraction() -> None:
 
 def test_invalid_hours_are_excluded_from_the_denominator() -> None:
     """A gap must shrink valid_hours, not become a dry hour."""
-    series = make_series(
-        [[0.0, 1.0, 2.0, 0.0]], valid=[[True, True, False, True]]
-    )
+    series = make_series([[0.0, 1.0, 2.0, 0.0]], valid=[[True, True, False, True]])
     row = place_summary(series, [place(0)]).row(0, named=True)
     assert row["steps"] == 4
     assert row["invalid_hours"] == 1
@@ -192,9 +186,7 @@ def test_distinct_nodes_are_not_tied() -> None:
 def test_summary_joins_places_independently_of_input_order() -> None:
     series = make_series([[0.0, 0.0], [1.0, 1.0]])
     out = place_summary(series, [place(1), place(0)])
-    by_name = dict(
-        zip(out["name"].to_list(), out["wet_hours"].to_list(), strict=True)
-    )
+    by_name = dict(zip(out["name"].to_list(), out["wet_hours"].to_list(), strict=True))
     assert by_name == {"Course 0": 0, "Course 1": 2}
     assert set(out["place_key"].to_list()) == {
         place(0).place_key,
@@ -288,7 +280,7 @@ def test_scorecard_filters_kind_and_ranks_driest_first() -> None:
     places = [place(0), place(1, kind="beach"), place(2)]
     series = make_series([[1.0] * 4, [1.0] * 4, [0.0] * 4])
     summary = place_summary(series, places)
-    card = scorecard(summary)
+    card = scorecard(summary, kind="golf_course")
     assert card["name"].to_list() == ["Course 2", "Course 0"]
 
 
@@ -310,6 +302,7 @@ def test_empty_series_produces_empty_summary() -> None:
     out = place_summary(series, [place(0)])
     assert out.height == 0
 
+
 def test_split_half_reliability_high_for_a_real_signal() -> None:
     """Places that genuinely differ must reproduce across halves."""
     rates = [[1.0] * 12] * 5 + [[0.0] * 12] * 5
@@ -319,9 +312,7 @@ def test_split_half_reliability_high_for_a_real_signal() -> None:
 
 def test_split_half_reliability_aligns_places_by_key() -> None:
     """A place missing from one half must not shift vector alignment."""
-    series = make_series(
-        [[0.0] * 4, [1.0] * 4, [1.0] * 4], start_hour=0
-    )
+    series = make_series([[0.0] * 4, [1.0] * 4, [1.0] * 4], start_hour=0)
     midpoint = series[TIME_COLUMN].median()
     series = series.filter(
         ~(

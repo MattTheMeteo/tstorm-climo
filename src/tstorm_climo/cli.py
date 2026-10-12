@@ -8,6 +8,7 @@ from pathlib import Path
 
 import polars as pl
 
+from tstorm_climo.artifacts import build_hourly_observation_artifact
 from tstorm_climo.climatology import summarize_grid
 from tstorm_climo.extract import extract_series
 from tstorm_climo.hrrr import load_precipitation
@@ -33,9 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for the CLI."""
     parser = argparse.ArgumentParser(
         prog="tstorm-climo",
-        description=(
-            "Build a precipitation climatology from HRRR analysis data."
-        ),
+        description=("Build a precipitation climatology from HRRR analysis data."),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -52,6 +51,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--end",
         required=True,
         help="Inclusive end of the time range (e.g. 2025-07-31).",
+    )
+
+    build = subparsers.add_parser(
+        "build-observations",
+        help="Build a reusable hourly rain-observation artifact.",
+    )
+    build.add_argument(
+        "--places",
+        required=True,
+        help="Places CSV, as written by fetch-places.",
+    )
+    build.add_argument(
+        "--start",
+        required=True,
+        help="Inclusive start of the time range (e.g. 2018-01-01).",
+    )
+    build.add_argument(
+        "--end",
+        required=True,
+        help="Inclusive end of the time range (e.g. 2025-12-31).",
+    )
+    build.add_argument(
+        "--output",
+        required=True,
+        help="New output directory for the Parquet files and manifest.",
     )
 
     report = subparsers.add_parser(
@@ -155,6 +179,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{time}: {count} grid points with precipitation")
         return 0
 
+    if args.command == "build-observations":
+        return _build_observations(args)
+
     if args.command == "rain-report":
         return _rain_report(args)
 
@@ -176,6 +203,32 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     return 1
+
+
+def _build_observations(args: argparse.Namespace) -> int:
+    """Build a versioned hourly observation artifact from a places CSV."""
+    places = load_csv(args.places)
+    if not places:
+        print("No places to build observations for.", file=sys.stderr)
+        return 1
+    try:
+        manifest = build_hourly_observation_artifact(
+            places, args.start, args.end, args.output
+        )
+    except (FileExistsError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    print(
+        f"Wrote {manifest['observations']['row_count']} observations for "
+        f"{manifest['place_catalog']['place_count']} places to {args.output}"
+    )
+    print(
+        f"Observed {manifest['date_range']['observed_start']} through "
+        f"{manifest['date_range']['observed_end']}"
+    )
+    print(f"Valid observation rows: {manifest['observations']['valid_fraction']:.1%}")
+    return 0
 
 
 def _rain_report(args: argparse.Namespace) -> int:
@@ -202,8 +255,8 @@ def _rain_report(args: argparse.Namespace) -> int:
         if args.month is not None
         else place_summary(series, places, threshold_mm_per_hour=args.threshold)
     )
-    table = scorecard(table, month=args.month) if args.kind else table.sort(
-        "wet_fraction"
+    table = (
+        scorecard(table, month=args.month) if args.kind else table.sort("wet_fraction")
     )
 
     # Reliability is only meaningful for the overall ranking, and it is
@@ -248,9 +301,7 @@ def _rain_report(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_table(
-    table: pl.DataFrame, *, threshold: float, month: int | None
-) -> None:
+def _print_table(table: pl.DataFrame, *, threshold: float, month: int | None) -> None:
     """Print a leaderboard, marking places that share a grid node."""
     scope = f"month {month:02d}" if month is not None else "all dates"
     print(f"Wet hours at > {threshold} mm/h, {scope}, driest first\n")

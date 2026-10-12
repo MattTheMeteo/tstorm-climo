@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -55,9 +56,7 @@ def make_opener(rate: np.ndarray, times: list[str]):
     return opener
 
 
-def a_place(
-    lat: float, lon: float, name: str = "Course", osm_id: int = 1
-) -> Place:
+def a_place(lat: float, lon: float, name: str = "Course", osm_id: int = 1) -> Place:
     return Place(
         osm_type="way",
         osm_id=osm_id,
@@ -112,9 +111,7 @@ def test_multiple_places_each_get_every_hour() -> None:
         a_place(float(lat[0, 0]), float(lon[0, 0]), "A", osm_id=1),
         a_place(float(lat[2, 3]), float(lon[2, 3]), "B", osm_id=2),
     ]
-    out = extract_series(
-        places, "2025-07-01", "2025-08-01", opener=flat_opener(0.0, 4)
-    )
+    out = extract_series(places, "2025-07-01", "2025-08-01", opener=flat_opener(0.0, 4))
     assert out.height == 8
     assert sorted(out["place_key"].unique().to_list()) == [
         "osm:way:1",
@@ -179,7 +176,7 @@ def test_grid_node_columns_accompany_each_row() -> None:
     )
     assert out["y_index"].to_list() == [0, 0]
     assert out["x_index"].to_list() == [0, 0]
-    assert out["snap_distance_km"].max() < 0.01
+    assert cast(float, out["snap_distance_km"].max()) < 0.01
     assert out["grid_lat"].to_list() == pytest.approx([lat[0, 0]] * 2)
 
 
@@ -262,8 +259,8 @@ def test_output_is_sorted_by_place_then_time() -> None:
     # The time column itself resets per place, so it is not globally
     # sorted and must not be assumed to be.
     for place_key in ("osm:way:1", "osm:way:2"):
-        times = out.filter(pl.col("place_key") == place_key)[TIME_COLUMN]
-        assert times.is_sorted()
+        time_col = out.filter(pl.col("place_key") == place_key)[TIME_COLUMN]
+        assert time_col.is_sorted()
 
 
 def test_colocated_places_get_identical_series() -> None:
@@ -294,15 +291,9 @@ def test_timezone_is_carried_through() -> None:
         a_place(float(lat[0, 0]), float(lon[0, 0]), "A", osm_id=1),
         a_place(float(lat[2, 3]), float(lon[2, 3]), "B", osm_id=2),
     ]
-    places[0] = places[0].model_copy(
-        update={"timezone": "America/New_York"}
-    )
-    places[1] = places[1].model_copy(
-        update={"timezone": "America/Denver"}
-    )
-    out = extract_series(
-        places, "2025-07-01", "2025-08-01", opener=flat_opener(0.0, 2)
-    )
+    places[0] = places[0].model_copy(update={"timezone": "America/New_York"})
+    places[1] = places[1].model_copy(update={"timezone": "America/Denver"})
+    out = extract_series(places, "2025-07-01", "2025-08-01", opener=flat_opener(0.0, 2))
     zones = out.group_by("place_key").agg(pl.col("tz_name").first())
     # Keyed lookup, not positional: group_by row order is not guaranteed.
     assert dict(
@@ -329,9 +320,7 @@ def test_mixed_timezones_can_be_partitioned_and_converted() -> None:
     )
     converted = pl.concat(
         part.with_columns(local=pl.col("time").dt.convert_time_zone(zone))
-        for (zone,), part in frame.partition_by(
-            "tz_name", as_dict=True
-        ).items()
+        for (zone,), part in frame.partition_by("tz_name", as_dict=True).items()
     )
     assert sorted(converted["local"].dt.hour().to_list()) == [12, 13]
 

@@ -77,9 +77,7 @@ def test_load_precipitation_drops_pre_2018_data() -> None:
     """
     times = ["2017-06-01T12", "2018-01-01T00", "2025-07-15T18"]
     ds = fake_precipitation(np.zeros((3, 2, 2)), times)
-    sliced = load_precipitation(
-        "2014-10-01", "2025-07-15T18", opener=make_opener(ds)
-    )
+    sliced = load_precipitation("2014-10-01", "2025-07-15T18", opener=make_opener(ds))
     assert list(sliced["time"].values) == list(
         pd.to_datetime(["2018-01-01T00", "2025-07-15T18"])
     )
@@ -88,9 +86,7 @@ def test_load_precipitation_drops_pre_2018_data() -> None:
 def test_load_precipitation_is_empty_for_entirely_pre_2018_range() -> None:
     times = ["2017-06-01T12", "2017-06-01T13", "2017-06-01T14"]
     ds = fake_precipitation(np.zeros((3, 2, 2)), times)
-    sliced = load_precipitation(
-        "2015-01-01", "2017-12-31", opener=make_opener(ds)
-    )
+    sliced = load_precipitation("2015-01-01", "2017-12-31", opener=make_opener(ds))
     assert sliced.sizes["time"] == 0
 
 
@@ -106,8 +102,11 @@ def test_default_threshold_is_in_mm_per_hour() -> None:
     # 1e-5 kg m-2 s-1 = 0.036 mm/h: below 0.05 mm/h, so dry.
     rate = np.array([[[0.05, 1e-5]]])
     events = summarize_grid(
-        load_precipitation("2025-07-15T17", "2025-07-15T17",
-                           opener=make_opener(fake_precipitation(rate, times)))
+        load_precipitation(
+            "2025-07-15T17",
+            "2025-07-15T17",
+            opener=make_opener(fake_precipitation(rate, times)),
+        )
     )
     assert events == {"2025-07-15T17:00:00": 1}
 
@@ -118,8 +117,11 @@ def test_threshold_is_exclusive() -> None:
     exactly = 0.05 / 3600.0  # kg m-2 s-1 == 0.05 mm/h
     rate = np.array([[[exactly, exactly]]])
     events = summarize_grid(
-        load_precipitation("2025-07-15T17", "2025-07-15T17",
-                           opener=make_opener(fake_precipitation(rate, times)))
+        load_precipitation(
+            "2025-07-15T17",
+            "2025-07-15T17",
+            opener=make_opener(fake_precipitation(rate, times)),
+        )
     )
     assert events == {"2025-07-15T17:00:00": 0}
 
@@ -129,8 +131,11 @@ def test_custom_threshold_is_honored() -> None:
     # 1 mm/h == 2.78e-4 kg m-2 s-1
     rate = np.array([[[0.5e-3, 0.1e-3]]])  # 1.8 mm/h, 0.36 mm/h
     events = summarize_grid(
-        load_precipitation("2025-07-15T17", "2025-07-15T17",
-                           opener=make_opener(fake_precipitation(rate, times))),
+        load_precipitation(
+            "2025-07-15T17",
+            "2025-07-15T17",
+            opener=make_opener(fake_precipitation(rate, times)),
+        ),
         threshold_mm_per_hour=1.0,
     )
     assert events == {"2025-07-15T17:00:00": 1}
@@ -148,7 +153,5 @@ def test_load_precipitation_returns_mm_per_hour() -> None:
     loaded = load_precipitation(
         "2025-07-15T17", "2025-07-15T17", opener=make_opener(ds)
     )
-    assert loaded[PRECIPITATION_MM_PER_HOUR][0, 0, 0].item() == pytest.approx(
-        3600.0
-    )
+    assert loaded[PRECIPITATION_MM_PER_HOUR][0, 0, 0].item() == pytest.approx(3600.0)
     assert loaded[PRECIPITATION_MM_PER_HOUR].attrs["units"] == "mm h-1"

@@ -90,7 +90,8 @@ def fake_extract(monkeypatch):
     import tstorm_climo.cli as cli_module
 
     monkeypatch.setattr(
-        cli_module, "extract_series",
+        cli_module,
+        "extract_series",
         lambda places, start, end, **kwargs: make_series(places=places),
     )
 
@@ -100,12 +101,18 @@ def test_rain_report_parses_arguments() -> None:
     args = parser.parse_args(
         [
             "rain-report",
-            "--places", "p.csv",
-            "--start", "2025-06-01",
-            "--end", "2025-07-01",
-            "--threshold", "0.25",
-            "--kind", "golf_course",
-            "--month", "6",
+            "--places",
+            "p.csv",
+            "--start",
+            "2025-06-01",
+            "--end",
+            "2025-07-01",
+            "--threshold",
+            "0.25",
+            "--kind",
+            "golf_course",
+            "--month",
+            "6",
         ]
     )
     assert args.command == "rain-report"
@@ -127,13 +134,21 @@ def test_rain_report_requires_places_and_dates() -> None:
         parser.parse_args(["rain-report"])
 
 
-def test_rain_report_prints_table(
-    places_csv: str, fake_extract, capsys
-) -> None:
-    assert main(
-        ["rain-report", "--places", places_csv, "--start", "2025-07-01",
-         "--end", "2025-08-01"]
-    ) == 0
+def test_rain_report_prints_table(places_csv: str, fake_extract, capsys) -> None:
+    assert (
+        main(
+            [
+                "rain-report",
+                "--places",
+                places_csv,
+                "--start",
+                "2025-07-01",
+                "--end",
+                "2025-08-01",
+            ]
+        )
+        == 0
+    )
     out = capsys.readouterr().out
     assert "Dry Course" in out
     assert "Wet Course" in out
@@ -141,13 +156,54 @@ def test_rain_report_prints_table(
 
 
 def test_rain_report_filters_kind(places_csv, fake_extract, capsys) -> None:
-    assert main(
-        ["rain-report", "--places", places_csv, "--start", "2025-07-01",
-         "--end", "2025-08-01", "--kind", "golf_course"]
-    ) == 0
+    assert (
+        main(
+            [
+                "rain-report",
+                "--places",
+                places_csv,
+                "--start",
+                "2025-07-01",
+                "--end",
+                "2025-08-01",
+                "--kind",
+                "golf_course",
+            ]
+        )
+        == 0
+    )
     out = capsys.readouterr().out
     assert "Dry Course" in out
     assert "A Beach" not in out
+
+
+def test_rain_report_non_golf_kind_is_not_dropped(
+    places_csv, fake_extract, capsys
+) -> None:
+    """A non-golf --kind must not be re-filtered back to golf courses.
+
+    Regression: scorecard had a hardcoded golf_course default, so any
+    other kind (or a mixed --kind list) was filtered to nothing.
+    """
+    assert (
+        main(
+            [
+                "rain-report",
+                "--places",
+                places_csv,
+                "--start",
+                "2025-07-01",
+                "--end",
+                "2025-08-01",
+                "--kind",
+                "beach",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "A Beach" in out
+    assert "Dry Course" not in out
 
 
 def test_rain_report_shows_reliability_and_caveats(
@@ -155,8 +211,15 @@ def test_rain_report_shows_reliability_and_caveats(
 ) -> None:
     """A leaderboard without its reliability figure is misleading."""
     main(
-        ["rain-report", "--places", places_csv, "--start", "2025-07-01",
-         "--end", "2025-08-01"]
+        [
+            "rain-report",
+            "--places",
+            places_csv,
+            "--start",
+            "2025-07-01",
+            "--end",
+            "2025-08-01",
+        ]
     )
     out = capsys.readouterr().out
     assert "Ranking reliability" in out
@@ -169,8 +232,17 @@ def test_rain_report_writes_parquet_and_sidecar(
 ) -> None:
     path = tmp_path / "report.parquet"
     main(
-        ["rain-report", "--places", places_csv, "--start", "2025-07-01",
-         "--end", "2025-08-01", "--output", str(path)]
+        [
+            "rain-report",
+            "--places",
+            places_csv,
+            "--start",
+            "2025-07-01",
+            "--end",
+            "2025-08-01",
+            "--output",
+            str(path),
+        ]
     )
     capsys.readouterr()
     assert path.exists()
@@ -188,18 +260,34 @@ def test_rain_report_writes_csv_when_extension_says_so(
 ) -> None:
     path = tmp_path / "report.csv"
     main(
-        ["rain-report", "--places", places_csv, "--start", "2025-07-01",
-         "--end", "2025-08-01", "--output", str(path)]
+        [
+            "rain-report",
+            "--places",
+            places_csv,
+            "--start",
+            "2025-07-01",
+            "--end",
+            "2025-08-01",
+            "--output",
+            str(path),
+        ]
     )
     assert pl.read_csv(path).height == 3
 
 
-def test_rain_report_month_slices_locally(
-    places_csv, fake_extract, capsys
-) -> None:
+def test_rain_report_month_slices_locally(places_csv, fake_extract, capsys) -> None:
     main(
-        ["rain-report", "--places", places_csv, "--start", "2025-07-01",
-         "--end", "2025-08-01", "--month", "7"]
+        [
+            "rain-report",
+            "--places",
+            places_csv,
+            "--start",
+            "2025-07-01",
+            "--end",
+            "2025-08-01",
+            "--month",
+            "7",
+        ]
     )
     out = capsys.readouterr().out
     assert "month 07" in out
@@ -208,17 +296,32 @@ def test_rain_report_month_slices_locally(
 def test_rain_report_errors_when_no_places_match(
     places_csv, fake_extract, capsys
 ) -> None:
-    assert main(
-        ["rain-report", "--places", places_csv, "--start", "2025-07-01",
-         "--end", "2025-08-01", "--kind", "swimming_pool"]
-    ) == 1
+    assert (
+        main(
+            [
+                "rain-report",
+                "--places",
+                places_csv,
+                "--start",
+                "2025-07-01",
+                "--end",
+                "2025-08-01",
+                "--kind",
+                "swimming_pool",
+            ]
+        )
+        == 1
+    )
     assert "No places" in capsys.readouterr().err
 
 
 def test_metadata_records_threshold_and_licences() -> None:
     metadata = build_metadata(
-        start="2025-01-01", end="2025-12-31",
-        threshold_mm_per_hour=0.5, place_count=10, reliability=0.41,
+        start="2025-01-01",
+        end="2025-12-31",
+        threshold_mm_per_hour=0.5,
+        place_count=10,
+        reliability=0.41,
     )
     assert metadata["threshold_mm_per_hour"] == 0.5
     assert metadata["ranking_reliability"] == 0.41
@@ -242,8 +345,6 @@ def test_write_metadata_sidecar(tmp_path: Path) -> None:
 
 
 def test_format_caveats_includes_reliability_when_present() -> None:
-    text = format_caveats(
-        {"ranking_reliability": 0.41, "caveats": ["grid is coarse"]}
-    )
+    text = format_caveats({"ranking_reliability": 0.41, "caveats": ["grid is coarse"]})
     assert "0.41" in text
     assert "grid is coarse" in text

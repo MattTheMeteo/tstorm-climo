@@ -123,35 +123,36 @@ def deduplicate(places: list[Place], tol_km: float = 1.0) -> list[Place]:
     for place in places:
         groups.setdefault((place.kind, place.name), []).append(place)
     for members in groups.values():
-        ordered = sorted(
-            members, key=lambda p: p.osm_type == "node"
-        )  # polygons first
+        ordered = sorted(members, key=lambda p: p.osm_type == "node")  # polygons first
         for place in ordered:
-            if all(
-                haversine_km(place, other) > tol_km for other in kept
-            ):
+            if all(haversine_km(place, other) > tol_km for other in kept):
                 kept.append(place)
     return kept
 
 
-def great_circle_km(lat1: float, lon1: float, lat2: float, lon2: float):
+def great_circle_km(
+    lat1: float | np.ndarray,
+    lon1: float | np.ndarray,
+    lat2: float | np.ndarray,
+    lon2: float | np.ndarray,
+) -> float | np.ndarray:
     """Great-circle distance between two lat/lon points, in kilometers.
 
     Arguments may be scalars or numpy arrays; the return type matches.
     """
     rlat1, rlat2 = np.radians(lat1), np.radians(lat2)
     dlat, dlon = np.radians(lat2 - lat1), np.radians(lon2 - lon1)
-    h = (
-        np.sin(dlat / 2) ** 2
-        + np.cos(rlat1) * np.cos(rlat2) * np.sin(dlon / 2) ** 2
-    )
+    h = np.sin(dlat / 2) ** 2 + np.cos(rlat1) * np.cos(rlat2) * np.sin(dlon / 2) ** 2
     # Clip before asin: floating point can push h just past 1.
-    return 2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(np.clip(h, 0.0, 1.0)))
+    result: float | np.ndarray = (
+        2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(np.clip(h, 0.0, 1.0)))
+    )
+    return result
 
 
 def haversine_km(a: Place, b: Place) -> float:
     """Great-circle distance between two places, in kilometers."""
-    return great_circle_km(a.lat, a.lon, b.lat, b.lon)
+    return float(great_circle_km(a.lat, a.lon, b.lat, b.lon))
 
 
 def to_polars(places: list[Place]) -> pl.DataFrame:

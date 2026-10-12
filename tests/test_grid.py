@@ -163,9 +163,7 @@ def test_nan_coordinates_are_never_selected() -> None:
 
 def test_cell_key_groups_by_node() -> None:
     grid = make_grid()
-    cells = grid.locate_places(
-        [a_place(42.0, -71.0, "A"), a_place(41.78, -70.6, "B")]
-    )
+    cells = grid.locate_places([a_place(42.0, -71.0, "A"), a_place(41.78, -70.6, "B")])
     assert cells[0].key == (cells[0].y_index, cells[0].x_index)
     assert cells[0].key != cells[1].key
 

@@ -28,6 +28,7 @@ from collections.abc import Sequence
 
 import numpy as np
 import polars as pl
+from polars.datatypes import DataType, DataTypeClass
 
 from tstorm_climo.grid import Grid, GridCell
 from tstorm_climo.hrrr import (
@@ -45,7 +46,7 @@ TIME_COLUMN = "time"
 RATE_COLUMN = PRECIPITATION_MM_PER_HOUR
 VALID_COLUMN = "valid"
 
-SCHEMA = {
+SCHEMA: dict[str, DataType | DataTypeClass] = {
     "place_key": pl.String,
     TIME_COLUMN: pl.Datetime("us", "UTC"),
     RATE_COLUMN: pl.Float64,
@@ -100,7 +101,7 @@ def extract_series(
 
     row_slice, col_slice = _block_bounds(cells, active_grid)
     # Slice time and space *before* converting units: converting first
-    # would materialize the whole 22 TB archive (the read is lazy until
+    # would materialize the whole 748 GiB archive (the read is lazy until
     # a value is needed, and the multiply would force it).
     block = (
         ds[PRECIPITATION_VARIABLE]
@@ -139,10 +140,8 @@ def _to_frame(
     rates = mm_per_hour.T.reshape(-1)
     valid = np.isfinite(rates)
 
-    def per_place(attribute: str, dtype: pl.DataType) -> pl.Series:
-        values = np.repeat(
-            np.array([getattr(c, attribute) for c in cells]), n_times
-        )
+    def per_place(attribute: str, dtype: DataType | DataTypeClass) -> pl.Series:
+        values = np.repeat(np.array([getattr(c, attribute) for c in cells]), n_times)
         return pl.Series(attribute, values, dtype=dtype)
 
     def per_place_str(attribute: str) -> pl.Series:
@@ -156,9 +155,7 @@ def _to_frame(
         {
             "place_key": pl.Series(place_keys, dtype=pl.String),
             TIME_COLUMN: pl.Series(frame_times).cast(SCHEMA[TIME_COLUMN]),
-            RATE_COLUMN: pl.Series(
-                np.where(valid, rates, np.nan), dtype=pl.Float64
-            ),
+            RATE_COLUMN: pl.Series(np.where(valid, rates, np.nan), dtype=pl.Float64),
             VALID_COLUMN: pl.Series(valid, dtype=pl.Boolean),
             "y_index": per_place("y_index", pl.Int64),
             "x_index": per_place("x_index", pl.Int64),
@@ -171,9 +168,7 @@ def _to_frame(
     )
 
 
-def _block_bounds(
-    cells: Sequence[GridCell], grid: Grid
-) -> tuple[slice, slice]:
+def _block_bounds(cells: Sequence[GridCell], grid: Grid) -> tuple[slice, slice]:
     """Row/column slices covering every cell, clamped to the grid."""
     n_rows, n_cols = grid.shape
     y_values = np.array([c.y_index for c in cells])

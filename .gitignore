@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Generated analysis artifacts
+artifacts/
+*.parquet
+*.meta.json
+
+# Type checker cache
+.mypy_cache/

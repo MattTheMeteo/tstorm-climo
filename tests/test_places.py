@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import httpx
 import polars as pl
 import pytest
 
-from tstorm_climo.osm import KIND_TAGS, build_query
+from tstorm_climo.osm import KIND_TAGS, USER_AGENT, build_query, run_query
 from tstorm_climo.places import (
     Place,
     classify,
@@ -20,11 +21,11 @@ BOUNDS = (42.35, -71.2, 42.95, -70.5)
 
 def test_classify_matches_tag() -> None:
     assert (
-        classify({"leisure": "golf_course", "name": "x"}, KIND_TAGS)
+        classify({"leisure": "golf_course", "name": "x"}, list(KIND_TAGS))
         == "golf_course"
     )
-    assert classify({"natural": "beach", "name": "x"}, KIND_TAGS) == "beach"
-    assert classify({"amenity": "cafe"}, KIND_TAGS) is None
+    assert classify({"natural": "beach", "name": "x"}, list(KIND_TAGS)) == "beach"
+    assert classify({"amenity": "cafe"}, list(KIND_TAGS)) is None
 
 
 def test_from_overpass_way_uses_center() -> None:
@@ -46,9 +47,7 @@ def test_from_overpass_way_uses_center() -> None:
 
 
 def test_place_key_includes_osm_element_type() -> None:
-    way = Place(
-        osm_type="way", osm_id=1, name="A", kind="beach", lat=42.0, lon=-70.9
-    )
+    way = Place(osm_type="way", osm_id=1, name="A", kind="beach", lat=42.0, lon=-70.9)
     relation = way.model_copy(update={"osm_type": "relation"})
     assert way.place_key == "osm:way:1"
     assert relation.place_key == "osm:relation:1"
@@ -111,13 +110,12 @@ def test_from_overpass_assigns_timezone() -> None:
         "tags": {"leisure": "golf_course", "name": "Essex County Club"},
     }
     place = from_overpass(["golf_course"], element)
+    assert place is not None
     assert place.timezone == "America/New_York"
 
 
 def test_timezone_defaults_to_utc_when_not_given() -> None:
-    place = Place(
-        osm_type="way", osm_id=1, kind="beach", lat=42.0, lon=-70.9
-    )
+    place = Place(osm_type="way", osm_id=1, kind="beach", lat=42.0, lon=-70.9)
     assert place.timezone == "UTC"
 
 
@@ -173,3 +171,97 @@ def test_csv_roundtrip_preserves_timezone(tmp_path) -> None:
     path = tmp_path / "p.csv"
     save_csv([place], str(path))
     assert load_csv(str(path))[0].timezone == "America/New_York"
+
+
+def _httpx_response(
+    status_code: int, payload: dict | None = None, text: str | None = None
+) -> httpx.Response:
+    """Build a real httpx.Response for transport stubbing.
+
+    ``text`` and ``json`` are mutually exclusive in httpx: setting both
+    makes ``response.json()`` parse the text, so only one is passed.
+    """
+    if text is not None:
+        return httpx.Response(
+            status_code=status_code,
+            text=text,
+            request=httpx.Request("POST", "https://example.test"),
+        )
+    return httpx.Response(
+        status_code=status_code,
+        json=payload if payload is not None else {"elements": []},
+        request=httpx.Request("POST", "https://example.test"),
+    )
+
+
+def test_run_query_parses_elements() -> None:
+    calls: list[dict] = []
+
+    def transport(url, **kwargs):
+        calls.append(kwargs)
+        return _httpx_response(200, {"elements": [{"type": "node", "id": 1}]})
+
+    elements = run_query("query", transport=transport, backoff_seconds=0)
+    assert elements == [{"type": "node", "id": 1}]
+    assert calls[0]["headers"]["User-Agent"] == USER_AGENT
+
+
+def test_run_query_retries_then_succeeds() -> None:
+    """Overpass returns transient errors under load; retry is expected."""
+    attempts: list[int] = []
+
+    def transport(url, **kwargs):
+        attempts.append(1)
+        if len(attempts) < 3:
+            return _httpx_response(504, text="gateway timeout")
+        return _httpx_response(200, {"elements": [{"type": "node", "id": 2}]})
+
+    elements = run_query("query", transport=transport, backoff_seconds=0)
+    assert elements == [{"type": "node", "id": 2}]
+    assert len(attempts) == 3
+
+
+def test_run_query_raises_after_exhausting_retries() -> None:
+    def transport(url, **kwargs):
+        return _httpx_response(400, text="bad request")
+
+    with pytest.raises(RuntimeError, match="HTTP 400"):
+        run_query(
+            "query", transport=transport, max_retries=2, backoff_seconds=0
+        )
+
+
+def test_run_query_retries_transport_errors() -> None:
+    """A connection reset is transient and must not abort the build."""
+    attempts: list[int] = []
+
+    def transport(url, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise httpx.ConnectError("connection reset")
+        return _httpx_response(200, {"elements": []})
+
+    assert run_query("query", transport=transport, backoff_seconds=0) == []
+    assert len(attempts) == 2
+
+
+def test_run_query_error_message_includes_transport_failure() -> None:
+    def transport(url, **kwargs):
+        raise httpx.ReadTimeout("timed out")
+
+    with pytest.raises(RuntimeError, match="ReadTimeout"):
+        run_query(
+            "query", transport=transport, max_retries=2, backoff_seconds=0
+        )
+
+
+def test_run_query_passes_a_timeout() -> None:
+    """No timeout means a hung Overpass blocks the build forever."""
+    seen: dict = {}
+
+    def transport(url, **kwargs):
+        seen.update(kwargs)
+        return _httpx_response(200, {"elements": []})
+
+    run_query("query", transport=transport, timeout_seconds=42.0)
+    assert seen["timeout"] == 42.0

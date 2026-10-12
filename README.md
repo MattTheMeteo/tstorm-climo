@@ -15,11 +15,18 @@ downloads required.
 
 ## Installation
 
-Requires [uv](https://docs.astral.sh/uv/). Python 3.14 is fetched
-automatically.
+Requires [uv](https://docs.astral.sh/uv/). Python 3.12 or newer is required;
+uv fetches the pinned interpreter from `.python-version` automatically.
 
 ```sh
 uv sync
+```
+
+The interactive marimo Studio app pulls in extra dependencies that are kept
+out of the core CLI:
+
+```sh
+uv sync --group app
 ```
 
 ## Usage
@@ -45,6 +52,21 @@ uv run tstorm-climo fetch-places \
 `places_north_shore.csv` in this repository is a committed example built
 that way (50 golf courses, 60 named beaches).
 
+Build a reusable hourly rain artifact for later interactive queries:
+
+```sh
+uv run tstorm-climo build-observations \
+  --places places_north_shore.csv \
+  --start 2018-01-01 --end 2025-12-31 \
+  --output artifacts/north-shore/rain-2018-2025
+```
+
+The new output directory contains `observations.parquet`, `places.parquet`,
+and `manifest.json`. Observations use stable `place_key` values, UTC times,
+the `rain_rate` variable in mm/h, and an explicit validity flag. The builder
+does not apply a wet threshold. It will not overwrite an existing output
+directory; choose a new path for each artifact build.
+
 Rank places by how often it rains on them — the Chuck leaderboard:
 
 ```sh
@@ -56,32 +78,38 @@ uv run tstorm-climo rain-report \
 
 Useful flags: `--month 6` restricts to one calendar month in local time,
 `--threshold` sets the wet rate in mm/h (default 0.05), and `--output
-report.parquet` writes the table with a `.meta.json` sidecar recording
+report.parquet` writes the summary with a `.meta.json` sidecar recording
 the archive, date range, threshold, reliability figure, and the CC-BY /
-ODbL attribution — so a notebook or web app can reuse the artifact
-without re-deriving its provenance.
+ODbL attribution. This is a fixed-range summary, not the hourly data
+artifact needed to recalculate arbitrary date ranges in an interactive app.
 
 The report always prints its **split-half reliability** alongside the
-table. Read it before trusting the ordering: at the default threshold it
-is around 0.41, which means neighbouring courses are separated mostly by
-noise. Places sharing a grid node are marked `tied`.
+table. It is calculated for the selected threshold and period; read it
+before trusting the ordering. Low reliability means the ranking may
+mostly reflect which years were sampled. Places sharing a grid node are
+marked `tied`.
 
 ## Development
 
 ```sh
-uv run pytest      # run the test suite
-uv run ruff check  # lint
+uv run pytest              # run the test suite
+uv run ruff check          # lint
+uv run ruff format --check # style
+uv run mypy                # type check
 ```
 
 ## Status
 
-Data access, place mapping, per-place extraction and per-place
-climatology summaries are implemented; the `rain-report` CLI and the
-marimo visualization layer are not.
+Implemented: HRRR data access, OSM place fetching, grid mapping,
+per-place rain extraction and summaries, the `rain-report` CLI, and a
+builder for reusable hourly rain Parquet artifacts. Snow analysis and a
+hosted marimo app are not implemented. The planned app will calculate in
+response to user choices from prepared artifacts, not fetch HRRR or Overpass
+data on each interaction.
 
 Pipeline: `places_north_shore.csv` (OSM via Overpass) → `Grid` maps each
 place to its nearest HRRR node → `extract_series` reads one contiguous
-grid block and returns an hourly series per place →
+grid block and returns an hourly series keyed by stable OSM `place_key` →
 `summarize.place_summary` / `by_local_month` / `by_local_hour` /
 `scorecard` produce the per-place tables.
 
@@ -94,9 +122,9 @@ Two caveats worth knowing before reading any output:
 - **A 3 km grid cannot separate co-located places.** The 50 golf
   courses occupy only 47 grid nodes; 6 courses form 3 pairs that share a
   node and therefore get identical numbers. They are flagged `tied`.
-- **Most of the between-course spread is sampling noise.** See
-  `summarize.split_half_reliability`, which measures it: ranking
-  courses by `rate > 0` is near-useless (r = 0.11), so a leaderboard
-  should not be published without its reliability figure alongside.
+- **Rankings can be dominated by sampling noise.** The report calculates
+  `summarize.split_half_reliability` for the chosen period and threshold;
+  see `PLAN.md` for measured results and limitations. A leaderboard should
+  not be read without its reliability figure.
 
 See `PLAN.md` for measurements, decisions, and open questions.

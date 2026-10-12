@@ -64,9 +64,7 @@ def add_local_time(series: pl.DataFrame) -> pl.DataFrame:
     return pl.concat(parts)
 
 
-def wet_rows(
-    series: pl.DataFrame, threshold_mm_per_hour: float
-) -> pl.DataFrame:
+def wet_rows(series: pl.DataFrame, threshold_mm_per_hour: float) -> pl.DataFrame:
     """Drop invalid rows and mark wet ones against a mm/h threshold."""
     return series.filter(pl.col(VALID_COLUMN)).with_columns(
         wet=pl.col(RATE_COLUMN) > threshold_mm_per_hour
@@ -151,9 +149,7 @@ def by_local_month(
             wet_hours=pl.col("wet").sum(),
             rain_mm=pl.col(RATE_COLUMN).sum(),
         )
-        .with_columns(
-            wet_fraction=pl.col("wet_hours") / pl.col("valid_hours")
-        )
+        .with_columns(wet_fraction=pl.col("wet_hours") / pl.col("valid_hours"))
         .sort("place_key", "local_month")
     )
 
@@ -183,9 +179,7 @@ def by_local_hour(
             wet_hours=pl.col("wet").sum(),
             rain_mm=pl.col(RATE_COLUMN).sum(),
         )
-        .with_columns(
-            wet_fraction=pl.col("wet_hours") / pl.col("hours_observed")
-        )
+        .with_columns(wet_fraction=pl.col("wet_hours") / pl.col("hours_observed"))
         .sort("place_key", "local_hour")
     )
 
@@ -193,32 +187,31 @@ def by_local_hour(
 def scorecard(
     summary: pl.DataFrame,
     *,
-    kind: str = "golf_course",
+    kind: str | None = None,
     month: int | None = None,
 ) -> pl.DataFrame:
-    """Rank a summary table, optionally restricted to one month.
+    """Rank a summary table, optionally restricted to one kind or month.
 
     Args:
         summary: Output of :func:`place_summary` or
             :func:`by_local_month`.
-        kind: Place kind to keep, e.g. ``golf_course``.
+        kind: Place kind to keep, e.g. ``golf_course``. ``None`` keeps
+            every kind; the caller is responsible for any pre-filtering.
         month: For a month-sliced summary, the calendar month (1-12) in
             local time. Ignored when ``summary`` is not month-sliced.
 
     Returns:
-        Places of that kind, driest first, with tied places kept
-        adjacent so the shared grid node is obvious.
+        Places, driest first, with tied places kept adjacent so the
+        shared grid node is obvious.
     """
-    out = summary.filter(pl.col("kind") == kind)
+    out = summary.filter(pl.col("kind") == kind) if kind is not None else summary
     if month is not None and "local_month" in out.columns:
         out = out.filter(pl.col("local_month") == month)
     # Tied places are kept adjacent so the shared grid node is obvious,
     # but a month-sliced table has no node columns, so sort on whatever
     # is actually present.
     keys = [
-        c
-        for c in ("wet_fraction", "y_index", "x_index", "name")
-        if c in out.columns
+        c for c in ("wet_fraction", "y_index", "x_index", "name") if c in out.columns
     ]
     return out.sort(keys)
 
@@ -278,17 +271,17 @@ def split_half_reliability(
 
 def _wet_fractions(part: pl.DataFrame) -> pl.DataFrame | None:
     """Per-place wet fractions for one time block, keyed by place_key."""
-    counts = part.group_by("place_key").agg(
-        wet=pl.col("wet").sum(), total=pl.len()
-    ).with_columns(wet_fraction=pl.col("wet") / pl.col("total"))
+    counts = (
+        part.group_by("place_key")
+        .agg(wet=pl.col("wet").sum(), total=pl.len())
+        .with_columns(wet_fraction=pl.col("wet") / pl.col("total"))
+    )
     if counts["wet_fraction"].n_unique() < 2:
         return None
     return counts.select("place_key", "wet_fraction")
 
 
-def _with_places(
-    series: pl.DataFrame, places: Sequence[Place]
-) -> pl.DataFrame:
+def _with_places(series: pl.DataFrame, places: Sequence[Place]) -> pl.DataFrame:
     """Attach place metadata to each row, keyed by stable ``place_key``."""
     table = pl.DataFrame(
         {

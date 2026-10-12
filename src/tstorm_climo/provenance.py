@@ -54,9 +54,7 @@ def build_metadata(
         A JSON-serializable mapping.
     """
     metadata: dict[str, Any] = {
-        "generated_at": datetime.now(UTC).isoformat(
-            timespec="seconds"
-        ),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "dataset_id": dataset_id,
         "date_range": {"requested_start": start, "requested_end": end},
         "analysis_window_start": MIN_VALID_DATE,

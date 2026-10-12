@@ -106,9 +106,7 @@ class Grid:
                 "must have the same shape"
             )
         if lat.ndim != 2:
-            raise ValueError(
-                f"latitude/longitude must be 2-D (y, x), got {lat.ndim}-D"
-            )
+            raise ValueError(f"latitude/longitude must be 2-D (y, x), got {lat.ndim}-D")
         self._lat = lat
         self._lon = lon
         self._name = name
@@ -146,7 +144,7 @@ class Grid:
     @property
     def max_snap_km(self) -> float:
         """Furthest a point may sit from its node and still be trusted."""
-        return MAX_SNAP_FACTOR * self._spacing_km * np.sqrt(2.0)
+        return MAX_SNAP_FACTOR * self._spacing_km * float(np.sqrt(2.0))
 
     def bounds(self) -> Bounds:
         """Geographic bounds of the grid."""
@@ -228,9 +226,7 @@ class Grid:
             x_index = col_slice.start + sub_col
             grid_lat = float(self._lat[y_index, x_index])
             grid_lon = float(self._lon[y_index, x_index])
-            distance = float(
-                great_circle_km(lat, lon, grid_lat, grid_lon)
-            )
+            distance = float(great_circle_km(lat, lon, grid_lat, grid_lon))
             if not np.isfinite(distance) or distance > self.max_snap_km:
                 raise PlaceOffGridError(
                     f"{label} at ({lat:.4f}, {lon:.4f}) is {distance:.2f} km "

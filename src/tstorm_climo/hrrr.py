@@ -73,9 +73,7 @@ def load_precipitation(
         ``time × y × x``. The rate is converted from the archive's
         kg m-2 s-1 here, once, so callers never handle that unit.
     """
-    da = open_analysis(dataset_id=dataset_id, opener=opener)[
-        PRECIPITATION_VARIABLE
-    ]
+    da = open_analysis(dataset_id=dataset_id, opener=opener)[PRECIPITATION_VARIABLE]
     da = da.sel(time=slice(max(start, MIN_VALID_DATE), end))
     return to_mm_per_hour(da).to_dataset(name=PRECIPITATION_MM_PER_HOUR)
 

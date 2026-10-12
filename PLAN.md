@@ -106,6 +106,37 @@ Trade-off accepted: each remote query costs ~20–30 s (cold scan). Fine
 for a weekly build; incompatible with an interactive UI — consistent with
 the plan's existing rule that the app never calls live data APIs.
 
+### Beaches: LayerCake coverage is poor — Overpass is better (measured)
+
+`natural=beach` is the primary beach tag, and `leisure=beach_resort`
+exists in LayerCake (14,151 features worldwide, plus 1,051 that also
+carry `natural=beach`). Both are queried. **Neither closes the gap.**
+
+Same North Shore bbox (42.35, −71.20, 42.95, −70.50):
+
+| Source | Beaches |
+|---|---|
+| Our committed Overpass CSV | **60** |
+| LayerCake `natural=beach` | 0 |
+| LayerCake `leisure=beach_resort` | 1 ("Waterfront") |
+| Names in common | **0** |
+
+LayerCake carries beaches elsewhere (2,770 `natural=beach` worldwide;
+present in a Cape Cod box), so this is **regional coverage, not a broken
+query** — verified by pulling the same box twice.
+
+**Consequence:** LayerCake is the bulk source for golf and ski, but
+**beaches should keep coming from Overpass** until its coverage improves.
+Do not silently drop the beach rows the app already shows: a weekly
+LayerCake refresh would reduce the North Shore beach catalog from 60 to 1
+with no obvious error. Either keep a second beach source or record the
+coverage gap explicitly in the manifest so a shrink is visible.
+
+Diagnostic pitfall: `WHERE a OR b AND bbox` binds as `a OR (b AND bbox)`
+in SQL, so the bbox silently constrains only the second arm and returns
+wildly inflated counts (2,771 instead of 1). Always parenthesise mixed
+`OR`/`AND` predicates.
+
 ### Ski areas: tagging is fragmented, but curatable (measured)
 
 Winter areas are **not** tagged consistently. `leisure=ski_resort` is

@@ -55,7 +55,12 @@ SOURCE_GEOMETRY = "geometry"
 # `leisure=ski_resort` is effectively unused. See PLAN.md.
 KIND_MATCHES: dict[str, list[tuple[str, tuple[str, ...]]]] = {
     "golf_course": [("leisure", ("golf_course",))],
-    "beach": [("natural", ("beach",))],
+    # `natural=beach` is the primary beach tag, but coverage in
+    # LayerCake is poor in practice (see PLAN.md). `beach_resort` is
+    # kept as a second path because it exists in the source (14k
+    # features worldwide), even though it did not close the North
+    # Shore gap on its own.
+    "beach": [("natural", ("beach",)), ("leisure", ("beach_resort",))],
     "ski_area": [
         ("sport", ("skiing", "ski", "ski_jumping", "snowboarding")),
         ("landuse", ("winter_sports", "winter_sport")),

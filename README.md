@@ -95,7 +95,7 @@ marked `tied`.
 uv run pytest              # run the test suite
 uv run ruff check          # lint
 uv run ruff format --check # style
-uv run mypy                # type check
+uv run ty check            # type check
 ```
 
 ## Status

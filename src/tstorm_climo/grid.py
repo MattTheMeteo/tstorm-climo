@@ -34,8 +34,10 @@ METRES_PER_DEGREE = 111_320.0
 # 0.75 leaves headroom for points just outside the edge.
 MAX_SNAP_FACTOR = 0.75
 
-# Cap on grid nodes held in the pairwise distance array at once.
-_BATCH_NODES = 250_000
+# Cap on grid nodes held in the pairwise distance array at once. Annotated
+# ``int`` (not a bare literal) so tests may override it without tripping a
+# type checker's Literal inference.
+_BATCH_NODES: int = 250_000
 
 
 class PlaceOffGridError(LookupError):

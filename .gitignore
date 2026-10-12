@@ -13,6 +13,3 @@ wheels/
 artifacts/
 *.parquet
 *.meta.json
-
-# Type checker cache
-.mypy_cache/

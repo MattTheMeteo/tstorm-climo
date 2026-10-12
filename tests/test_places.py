@@ -226,9 +226,7 @@ def test_run_query_raises_after_exhausting_retries() -> None:
         return _httpx_response(400, text="bad request")
 
     with pytest.raises(RuntimeError, match="HTTP 400"):
-        run_query(
-            "query", transport=transport, max_retries=2, backoff_seconds=0
-        )
+        run_query("query", transport=transport, max_retries=2, backoff_seconds=0)
 
 
 def test_run_query_retries_transport_errors() -> None:
@@ -250,9 +248,7 @@ def test_run_query_error_message_includes_transport_failure() -> None:
         raise httpx.ReadTimeout("timed out")
 
     with pytest.raises(RuntimeError, match="ReadTimeout"):
-        run_query(
-            "query", transport=transport, max_retries=2, backoff_seconds=0
-        )
+        run_query("query", transport=transport, max_retries=2, backoff_seconds=0)
 
 
 def test_run_query_passes_a_timeout() -> None:

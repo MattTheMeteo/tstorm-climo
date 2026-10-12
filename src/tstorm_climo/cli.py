@@ -9,6 +9,7 @@ from pathlib import Path
 import polars as pl
 
 from tstorm_climo.artifacts import build_hourly_observation_artifact
+from tstorm_climo.catalog import KIND_MATCHES, fetch_places, save_places
 from tstorm_climo.climatology import summarize_grid
 from tstorm_climo.extract import extract_series
 from tstorm_climo.hrrr import load_precipitation
@@ -130,6 +131,36 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    catalog = subparsers.add_parser(
+        "build-catalog",
+        help="Pull a place catalog from the LayerCake OSM POI parquet.",
+    )
+    catalog.add_argument(
+        "--kind",
+        action="append",
+        required=True,
+        choices=sorted(KIND_MATCHES),
+        help="Place kind to pull; repeatable. Required.",
+    )
+    catalog.add_argument(
+        "--bbox",
+        nargs=4,
+        type=float,
+        metavar=("SOUTH", "WEST", "NORTH", "EAST"),
+        help=(
+            "Restrict to this bounding box in decimal degrees. Omit for "
+            "the whole (worldwide) source."
+        ),
+    )
+    catalog.add_argument(
+        "--output",
+        required=True,
+        help=(
+            "Directory to create for this release. Holds places.parquet "
+            "and manifest.json. Must not already exist."
+        ),
+    )
+
     fetch = subparsers.add_parser(
         "fetch-places",
         help="Fetch named places from OpenStreetMap via Overpass.",
@@ -184,6 +215,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "rain-report":
         return _rain_report(args)
+
+    if args.command == "build-catalog":
+        bbox = tuple(args.bbox) if args.bbox else None
+        places = fetch_places(args.kind, bbox=bbox)
+        if places.height == 0:
+            print("No places matched.", file=sys.stderr)
+            return 1
+        release = save_places(
+            places, args.output, kinds=args.kind
+        )
+        counts = places.group_by("kind").len().sort("kind")
+        for row in counts.iter_rows():
+            print(f"  {row[0]}: {row[1]}")
+        print(f"Wrote {places.height} places to {release}")
+        print(f"Places: {PLACES_ATTRIBUTION}")
+        return 0
 
     if args.command == "fetch-places":
         kinds = args.kind or list(KIND_TAGS)

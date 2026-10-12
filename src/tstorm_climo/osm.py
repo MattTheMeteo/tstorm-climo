@@ -91,7 +91,8 @@ def run_query(
             last_error = f"{type(error).__name__}: {error}"
         else:
             if response.is_success:
-                return response.json()["elements"]
+                elements: list[dict] = response.json()["elements"]
+                return elements
             last_error = f"HTTP {response.status_code} {response.text[:200]}"
         if attempt < max_retries:
             time.sleep(backoff_seconds)

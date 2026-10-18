@@ -21,7 +21,13 @@ from tstorm_climo.extract import extract_series
 from tstorm_climo.geofabrik import build_geofabrik_catalog
 from tstorm_climo.hrrr import load_precipitation
 from tstorm_climo.osm import KIND_TAGS, build_query, run_query
-from tstorm_climo.places import deduplicate, from_overpass, load_csv, save_csv
+from tstorm_climo.places import (
+    deduplicate,
+    from_overpass,
+    load_csv,
+    load_places,
+    save_csv,
+)
 from tstorm_climo.provenance import (
     ARCHIVE_ATTRIBUTION,
     PLACES_ATTRIBUTION,
@@ -68,7 +74,10 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--places",
         required=True,
-        help="Places CSV, as written by fetch-places.",
+        help=(
+            "Places CSV (as written by fetch-places) or a catalog "
+            "places.parquet with footprint geometry."
+        ),
     )
     build.add_argument(
         "--start",
@@ -354,8 +363,8 @@ def _bbox_s3_scope(bbox: list[float] | None) -> str:
 
 
 def _build_observations(args: argparse.Namespace) -> int:
-    """Build a versioned hourly observation artifact from a places CSV."""
-    places = load_csv(args.places)
+    """Build a versioned hourly observation artifact from a places file."""
+    places = load_places(args.places)
     if not places:
         print("No places to build observations for.", file=sys.stderr)
         return 1

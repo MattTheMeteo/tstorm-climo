@@ -55,6 +55,20 @@ def a_place(osm_id: int = 1, *, lon: float = -70.964) -> Place:
     )
 
 
+def _wkb(wkt: str) -> bytes:
+    """Encode WKT as WKB using DuckDB's spatial extension."""
+    import duckdb
+
+    con = duckdb.connect()
+    try:
+        con.execute("INSTALL spatial; LOAD spatial;")
+        row = con.execute("SELECT ST_AsWKB(ST_GeomFromText(?))", [wkt]).fetchone()
+        assert row is not None
+        return bytes(row[0])
+    finally:
+        con.close()
+
+
 def test_build_writes_observations_places_and_manifest(tmp_path) -> None:
     output = tmp_path / "rain-artifact"
     manifest = build_hourly_observation_artifact(
@@ -140,3 +154,25 @@ def test_empty_result_does_not_publish_partial_artifact(tmp_path) -> None:
         )
     assert not output.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_places_parquet_preserves_geometry(tmp_path) -> None:
+    wkb = _wkb("POINT(-70.964 41.973)")
+    place = a_place().model_copy(update={"geometry_wkb": wkb})
+    output = tmp_path / "rain"
+    build_hourly_observation_artifact(
+        [place], "2025-07-15", "2025-07-15", output, opener=make_opener()
+    )
+    places = pl.read_parquet(output / "places.parquet")
+    assert places["geometry_wkb"].dtype == pl.Binary
+    assert places["geometry_wkb"][0] == wkb
+
+
+def test_places_parquet_geometry_column_is_binary_even_when_empty(tmp_path) -> None:
+    output = tmp_path / "rain"
+    build_hourly_observation_artifact(
+        [a_place()], "2025-07-15", "2025-07-15", output, opener=make_opener()
+    )
+    places = pl.read_parquet(output / "places.parquet")
+    assert places["geometry_wkb"].dtype == pl.Binary
+    assert places["geometry_wkb"][0] is None

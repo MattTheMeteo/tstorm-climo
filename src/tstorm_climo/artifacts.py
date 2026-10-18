@@ -96,12 +96,19 @@ def build_hourly_observation_artifact(
         .with_columns(pl.lit(RAIN_RATE_VARIABLE).alias("variable"))
         .select(OBSERVATION_COLUMNS)
     )
-    place_records = [
-        {"place_key": place.place_key, **place.model_dump(mode="json")}
-        for place in sorted(places, key=lambda item: item.place_key)
+    sorted_places = sorted(places, key=lambda item: item.place_key)
+    # JSON-safe records for the content hash; geometry is hex-encoded so
+    # the hash stays deterministic and order-independent.
+    json_records = [
+        {
+            "place_key": place.place_key,
+            **place.model_dump(mode="json", exclude={"geometry_wkb"}),
+            "geometry_wkb": place.geometry_wkb.hex() if place.geometry_wkb else None,
+        }
+        for place in sorted_places
     ]
-    places_frame = pl.DataFrame(place_records)
-    catalog_hash = _catalog_hash(place_records)
+    catalog_hash = _catalog_hash(json_records)
+    places_frame = _places_frame(sorted_places)
     valid_rows = int(observations[VALID_COLUMN].sum())
     times = observations[TIME_UTC_COLUMN]
     manifest: dict[str, Any] = {
@@ -126,7 +133,10 @@ def build_hourly_observation_artifact(
             "observed_end": _isoformat(cast(datetime | None, times.max())),
             "analysis_window_start": MIN_VALID_DATE,
         },
-        "sampling": "Nearest HRRR grid point to each place representative point.",
+        "sampling": (
+            "Footprint-weighted average over covered grid nodes where a "
+            "place carries polygon geometry; nearest grid point otherwise."
+        ),
         "place_catalog": {
             "place_count": len(places),
             "content_sha256": catalog_hash,
@@ -161,6 +171,23 @@ def build_hourly_observation_artifact(
         staging.rename(destination)
 
     return manifest
+
+
+def _places_frame(places: Sequence[Place]) -> pl.DataFrame:
+    """The places table written beside the observations.
+
+    Scalar fields mirror the CSV representation; geometry is kept as a
+    binary ``geometry_wkb`` column so footprints survive the parquet
+    round-trip, with a stable Binary dtype even when every place is a
+    point with no footprint.
+    """
+    scalar = [
+        {"place_key": place.place_key, **place.model_dump(exclude={"geometry_wkb"})}
+        for place in places
+    ]
+    return pl.DataFrame(scalar).with_columns(
+        pl.Series("geometry_wkb", [p.geometry_wkb for p in places], dtype=pl.Binary)
+    )
 
 
 def _catalog_hash(records: list[dict[str, Any]]) -> str:

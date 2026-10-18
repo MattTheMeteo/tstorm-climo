@@ -148,7 +148,7 @@ def test_build_observations_command_runs_builder(monkeypatch, tmp_path, capsys) 
     import tstorm_climo.cli as cli_module
 
     places = [object()]
-    monkeypatch.setattr(cli_module, "load_csv", lambda _path: places)
+    monkeypatch.setattr(cli_module, "load_places", lambda _path: places)
     manifest = {
         "observations": {"row_count": 2, "valid_fraction": 0.5},
         "place_catalog": {"place_count": 1},

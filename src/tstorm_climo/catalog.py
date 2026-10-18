@@ -25,6 +25,7 @@ footprints rather than representative points.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -32,6 +33,7 @@ from typing import Any
 
 import polars as pl
 
+from tstorm_climo.places import great_circle_km
 from tstorm_climo.provenance import (
     PLACES_ATTRIBUTION,
     PLACES_LICENSE,
@@ -149,6 +151,97 @@ def match_tags(
         if matched_columns:
             return kind, "+".join(matched_columns)
     return None
+
+
+# Name substrings (lowercased) that mark a golf practice facility rather
+# than a full course. Kept deliberately narrow: "golf center" is absent
+# because Garrison Par 3 Golf Center is a real course. The last few are
+# verbatim facility names with no reliable generic marker.
+PRACTICE_FACILITY_MARKERS: tuple[str, ...] = (
+    "driving range",
+    "pitch and putt",
+    "pitch & putt",
+    "pitch n putt",
+    "teaching center",
+    "golf academy",
+    "practice facility",
+    "fitness club",
+    "athletic association",
+    "fore kicks",
+    "kohr golf",
+    "longhi's golf",
+    "golf rx",
+)
+
+_PRACTICE_FACILITY_PATTERN = "|".join(
+    re.escape(marker) for marker in PRACTICE_FACILITY_MARKERS
+)
+
+# Preference order when one OSM feature appears as several elements: an
+# area beats a point, and a relation (which aggregates ways) beats a bare
+# way, which beats a node.
+_OSM_TYPE_PREFERENCE: dict[str, int] = {"relation": 2, "way": 1, "node": 0}
+
+
+def exclude_practice_facilities(places: pl.DataFrame) -> pl.DataFrame:
+    """Drop golf practice facilities (driving ranges, pitch-and-putts, ...).
+
+    Only ``golf_course`` rows are inspected; other kinds pass through
+    unchanged. Matching is a case-insensitive substring against
+    :data:`PRACTICE_FACILITY_MARKERS`.
+    """
+    if places.height == 0:
+        return places
+    lowered = pl.col("name").str.to_lowercase()
+    marked = lowered.str.contains(_PRACTICE_FACILITY_PATTERN)
+    is_facility = pl.col("kind").eq("golf_course") & marked
+    return places.filter(~is_facility)
+
+
+def deduplicate_places(
+    places: pl.DataFrame, *, tol_km: float = 1.0
+) -> pl.DataFrame:
+    """Collapse near-duplicate representations of the same place.
+
+    OSM often maps one feature as a node, a way and a relation under the
+    same name. Within each ``(kind, name)`` group the area representation
+    is preferred over a point, and any member within ``tol_km`` of an
+    already-kept member is dropped. Same-named places farther apart are
+    all kept.
+    """
+    if places.height == 0:
+        return places
+    keyed = places.with_columns(
+        pl.col("name")
+        .str.to_lowercase()
+        .str.replace_all(r"[^a-z0-9]", "")
+        .alias("_norm_name")
+    )
+    kept: list[dict[str, Any]] = []
+    for part in keyed.partition_by(["kind", "_norm_name"], as_dict=True).values():
+        ordered = part.sort(_representation_preference(), descending=True)
+        group_kept: list[dict[str, Any]] = []
+        for row in ordered.drop("_norm_name").iter_rows(named=True):
+            if all(
+                great_circle_km(row["lat"], row["lon"], other["lat"], other["lon"])
+                > tol_km
+                for other in group_kept
+            ):
+                group_kept.append(row)
+        kept.extend(group_kept)
+    return pl.DataFrame(kept, schema=PLACES_SCHEMA).sort("place_key")
+
+
+def _representation_preference() -> pl.Expr:
+    """Sort key preferring area geometry, then relation > way > node."""
+    return (
+        pl.col("geometry_type").ne("POINT").cast(pl.Int64) * 100
+        + pl.when(pl.col("osm_type") == "relation")
+        .then(2)
+        .when(pl.col("osm_type") == "way")
+        .then(1)
+        .otherwise(0)
+    )
 
 
 def build_query(

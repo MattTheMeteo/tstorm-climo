@@ -1,12 +1,12 @@
 """Extract hourly precipitation time series for places.
 
 Reads the analysis archive once, over the contiguous grid block that
-covers the requested places, then gathers each place's grid node out of
-that block in memory. Reading per place would issue a scattered request
-each time; the archive chunks ``y``/``x`` at 135 km, so one block read
+covers the requested places, then gathers each place's value out of that
+block in memory. Reading per place would issue a scattered request each
+time; the archive chunks ``y``/``x`` at 135 km, so one block read
 amortises across every place inside it.
 
-Two deliberate choices:
+Deliberate choices:
 
 - **Rates are converted to mm/h.** The conversion lives in
   :func:`tstorm_climo.hrrr.to_mm_per_hour` and is applied here once, so
@@ -16,6 +16,11 @@ Two deliberate choices:
   NaN where source data is missing, and ``NaN > threshold`` is ``False``.
   Emitting a ``valid`` column keeps "no data" distinguishable from "no
   rain", which a wet-hour count would otherwise conflate.
+- **Footprint geometry is averaged, not ignored.** A place carrying a
+  ``POLYGON``/``MULTIPOLYGON`` footprint is sampled as the equal-weighted
+  mean over the grid nodes whose centers fall inside it
+  (:meth:`tstorm_climo.grid.Grid.cover_cells`). Point-only or no-geometry
+  places keep the nearest-node sample.
 
 No threshold is applied here. Deciding what counts as rain belongs to
 the climatology layer; this module returns rates and lets that layer
@@ -71,8 +76,9 @@ def extract_series(
     """Extract an hourly precipitation series for each place.
 
     Args:
-        places: Places to extract for. Each is mapped to its nearest
-            grid node via :meth:`Grid.locate_places`.
+        places: Places to extract for. Each is mapped to the grid nodes
+            its footprint covers, or to its nearest node when it has no
+            polygon footprint (see :meth:`Grid.cover_cells`).
         start: Inclusive start of the time range. Clamped to
             :data:`~tstorm_climo.hrrr.MIN_VALID_DATE`.
         end: Inclusive end of the time range.
@@ -82,9 +88,10 @@ def extract_series(
 
     Returns:
         A long-format frame with one row per (place, hour), carrying the
-        rate in mm/h, a ``valid`` flag, and the grid node each place
-        was mapped to. Rows where the archive is missing are present
-        with ``valid = False`` rather than omitted.
+        footprint-averaged (or nearest-node) rate in mm/h, a ``valid``
+        flag, and the anchor node each place was mapped to. Rows where the
+        archive is missing are present with ``valid = False`` rather than
+        omitted.
 
     Raises:
         PlaceOffGridError: If a place cannot be mapped to the grid.
@@ -97,9 +104,12 @@ def extract_series(
 
     ds = open_analysis(opener=opener)
     active_grid = grid if grid is not None else Grid.from_dataset(ds)
-    cells = active_grid.locate_places(places)
+    anchors = active_grid.locate_places(places)
 
-    row_slice, col_slice = _block_bounds(cells, active_grid)
+    # Footprint nodes when a polygon covers any, else the anchor node.
+    sampling = _sampling_cells(active_grid, places, anchors)
+
+    row_slice, col_slice = _sampling_bounds(sampling, active_grid)
     # Slice time and space *before* converting units: converting first
     # would materialize the whole 748 GiB archive (the read is lazy until
     # a value is needed, and the multiply would force it).
@@ -112,13 +122,13 @@ def extract_series(
         return pl.DataFrame(schema=SCHEMA)
     block = to_mm_per_hour(block)
 
-    # Gather each place's node out of the block.
-    y_idx = np.array([c.y_index for c in cells]) - row_slice.start
-    x_idx = np.array([c.x_index for c in cells]) - col_slice.start
-    mm_per_hour = block.values[:, y_idx, x_idx].astype(np.float64)
+    # Footprint-weighted average per (place, time).
+    mm_per_hour = _weighted_rates(
+        block.values, sampling, row_slice.start, col_slice.start
+    )
     times = np.asarray(block["time"].values)
 
-    return _to_frame(places, cells, times, mm_per_hour)
+    return _to_frame(places, anchors, times, mm_per_hour)
 
 
 def _to_frame(
@@ -168,12 +178,57 @@ def _to_frame(
     )
 
 
-def _block_bounds(cells: Sequence[GridCell], grid: Grid) -> tuple[slice, slice]:
-    """Row/column slices covering every cell, clamped to the grid."""
+def _sampling_cells(
+    grid: Grid, places: Sequence[Place], anchors: Sequence[GridCell]
+) -> list[list[tuple[int, int, float]]]:
+    """Per-place sampling cells: covered footprint nodes, else the anchor.
+
+    A place carrying polygon geometry is sampled over every grid node
+    whose center falls inside it (:meth:`Grid.cover_cells`). A place with
+    no such geometry -- or a point/small polygon that covers no node
+    center -- falls back to its nearest node with weight 1.0.
+    """
+    sampling: list[list[tuple[int, int, float]]] = []
+    for place, anchor in zip(places, anchors, strict=True):
+        covered = grid.cover_cells(place.geometry_wkb) if place.geometry_wkb else []
+        if covered:
+            sampling.append(
+                [(cell.y_index, cell.x_index, cell.weight) for cell in covered]
+            )
+        else:
+            sampling.append([(anchor.y_index, anchor.x_index, 1.0)])
+    return sampling
+
+
+def _sampling_bounds(
+    sampling: Sequence[Sequence[tuple[int, int, float]]], grid: Grid
+) -> tuple[slice, slice]:
+    """Row/column slices covering every sampled cell, clamped to the grid."""
+    y_values = np.array([y for cells in sampling for y, _, _ in cells])
+    x_values = np.array([x for cells in sampling for _, x, _ in cells])
     n_rows, n_cols = grid.shape
-    y_values = np.array([c.y_index for c in cells])
-    x_values = np.array([c.x_index for c in cells])
     return (
         slice(int(max(y_values.min(), 0)), int(min(y_values.max() + 1, n_rows))),
         slice(int(max(x_values.min(), 0)), int(min(x_values.max() + 1, n_cols))),
     )
+
+
+def _weighted_rates(
+    values: np.ndarray,
+    sampling: Sequence[Sequence[tuple[int, int, float]]],
+    row_start: int,
+    col_start: int,
+) -> np.ndarray:
+    """Footprint-weighted average rate, shaped ``(time, place)``.
+
+    Each place's cells carry ``(y_index, x_index, weight)`` in absolute
+    grid coordinates; ``row_start``/``col_start`` translate them into the
+    block's local indexing.
+    """
+    rates = np.empty((values.shape[0], len(sampling)), dtype=np.float64)
+    for i, cells in enumerate(sampling):
+        weighted = np.zeros(values.shape[0], dtype=np.float64)
+        for y, x, weight in cells:
+            weighted += weight * values[:, y - row_start, x - col_start]
+        rates[:, i] = weighted
+    return rates

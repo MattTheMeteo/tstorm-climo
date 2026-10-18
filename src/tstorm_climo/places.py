@@ -30,6 +30,9 @@ class Place(BaseModel):
             Looked up from the coordinates when the place is built, and
             carried through the places CSV. Local-time questions (what
             hour was it when the rain arrived) depend on this.
+        geometry_wkb: WKB footprint geometry (WGS84) when known; ``None``
+            for point-only places (e.g. the Overpass CSV). Carried through
+            the observation artifact, never the CSV.
     """
 
     osm_type: str
@@ -39,6 +42,7 @@ class Place(BaseModel):
     lat: float
     lon: float
     timezone: str = UTC_TIMEZONE
+    geometry_wkb: bytes | None = None
 
     @property
     def display_name(self) -> str:
@@ -156,8 +160,12 @@ def haversine_km(a: Place, b: Place) -> float:
 
 
 def to_polars(places: list[Place]) -> pl.DataFrame:
-    """Convert places to a polars DataFrame for analysis and export."""
-    return pl.DataFrame([p.model_dump() for p in places])
+    """Convert places to a polars DataFrame for analysis and export.
+
+    Geometry is excluded: the CSV representation carries scalar fields
+    only, and binary WKB cannot round-trip through CSV anyway.
+    """
+    return pl.DataFrame([p.model_dump(exclude={"geometry_wkb"}) for p in places])
 
 
 def save_csv(places: list[Place], path: str) -> None:
@@ -170,3 +178,45 @@ def load_csv(path: str) -> list[Place]:
     """Load places from a CSV saved by :func:`save_csv`."""
     df = pl.read_csv(path)
     return [Place.model_validate(row) for row in df.iter_rows(named=True)]
+
+
+def load_places(path: str) -> list[Place]:
+    """Load places from a CSV (scalar only) or a catalog parquet (with geometry).
+
+    The file type is chosen by extension: ``.parquet`` reads a catalog
+    release produced by :mod:`tstorm_climo.catalog`, which carries full
+    footprint geometry; anything else is treated as the CSV written by
+    :func:`save_csv`.
+    """
+    if str(path).lower().endswith(".parquet"):
+        return from_catalog_parquet(path)
+    return load_csv(path)
+
+
+def from_catalog_parquet(path: str) -> list[Place]:
+    """Load places from a catalog release's ``places.parquet``.
+
+    The catalog stores a string ``osm_id`` and full footprint geometry;
+    both are normalized back into :class:`Place`. The timezone is
+    recomputed from the representative point because the catalog does not
+    carry one.
+    """
+    frame = pl.read_parquet(path)
+    places: list[Place] = []
+    for row in frame.iter_rows(named=True):
+        wkb = row.get("geometry_wkb")
+        lat = float(row["lat"])
+        lon = float(row["lon"])
+        places.append(
+            Place(
+                osm_type=row["osm_type"],
+                osm_id=int(row["osm_id"]),
+                name=row["name"],
+                kind=row["kind"],
+                lat=lat,
+                lon=lon,
+                timezone=timezone_at(lat, lon),
+                geometry_wkb=bytes(wkb) if wkb is not None else None,
+            )
+        )
+    return places

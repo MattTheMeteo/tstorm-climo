@@ -17,6 +17,8 @@ import polars as pl
 from tstorm_climo.catalog import (
     KIND_MATCHES,
     PLACES_SCHEMA,
+    deduplicate_places,
+    exclude_practice_facilities,
     match_tags,
     save_places,
 )
@@ -202,6 +204,8 @@ def build_geofabrik_catalog(
             region, pbf_path, client=client
         )
         places = extract_geofabrik_places(pbf_path, kinds, bbox=bbox)
+        places = exclude_practice_facilities(places)
+        places = deduplicate_places(places)
         if places.height == 0:
             raise ValueError(
                 f"no matching places found in Geofabrik region {region!r}"

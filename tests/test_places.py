@@ -10,8 +10,10 @@ from tstorm_climo.osm import KIND_TAGS, USER_AGENT, build_query, run_query
 from tstorm_climo.places import (
     Place,
     classify,
+    from_catalog_parquet,
     from_overpass,
     load_csv,
+    load_places,
     save_csv,
     timezone_at,
 )
@@ -261,3 +263,69 @@ def test_run_query_passes_a_timeout() -> None:
 
     run_query("query", transport=transport, timeout_seconds=42.0)
     assert seen["timeout"] == 42.0
+
+
+def _write_catalog_parquet(tmp_path, wkb=b"\x01\x03\x00\x00\x00"):
+    frame = pl.DataFrame(
+        {
+            "place_key": ["osm:way:1"],
+            "osm_type": ["way"],
+            "osm_id": ["1"],
+            "name": ["With Geometry"],
+            "kind": ["golf_course"],
+            "lat": [42.58],
+            "lon": [-70.76],
+            "geometry_wkb": pl.Series([wkb], dtype=pl.Binary),
+            "geometry_type": ["POLYGON"],
+            "match_source": ["leisure"],
+        }
+    )
+    path = tmp_path / "places.parquet"
+    frame.write_parquet(path)
+    return path
+
+
+def test_from_catalog_parquet_loads_geometry_and_normalizes(tmp_path) -> None:
+    wkb = b"\x01\x03\x00\x00\x00"
+    [place] = from_catalog_parquet(str(_write_catalog_parquet(tmp_path, wkb=wkb)))
+    assert place.geometry_wkb == wkb
+    assert place.osm_id == 1  # catalog stores it as a string
+    assert place.timezone == "America/New_York"
+
+
+def test_load_places_dispatches_by_extension(tmp_path) -> None:
+    parquet = _write_catalog_parquet(tmp_path)
+    csv_path = tmp_path / "places.csv"
+    save_csv(
+        [
+            Place(
+                osm_type="way",
+                osm_id=2,
+                name="No Geometry",
+                kind="golf_course",
+                lat=42.0,
+                lon=-70.9,
+            )
+        ],
+        str(csv_path),
+    )
+    [from_parquet] = load_places(str(parquet))
+    [from_csv] = load_places(str(csv_path))
+    assert from_parquet.geometry_wkb == b"\x01\x03\x00\x00\x00"
+    assert from_csv.geometry_wkb is None
+
+
+def test_csv_roundtrip_omits_geometry(tmp_path) -> None:
+    place = Place(
+        osm_type="way",
+        osm_id=1,
+        name="X",
+        kind="golf_course",
+        lat=42.0,
+        lon=-70.9,
+        geometry_wkb=b"\x01\x02",
+    )
+    path = tmp_path / "p.csv"
+    save_csv([place], str(path))
+    assert "geometry_wkb" not in pl.read_csv(str(path)).columns
+    assert load_csv(str(path))[0].geometry_wkb is None

@@ -257,6 +257,41 @@ injected `opener`; no network in the fast test suite.
      costs 9× the reads and does not separate co-located places, since
      they share the window too. It would only blur the grid, not sharpen
      the answer.
+   - **Follow-up (landed, uncommitted): polygon footprints.**
+     `Grid.cover_cells(geometry_wkb)` returns the nodes whose centres fall
+     inside an OSM `POLYGON`/`MULTIPOLYGON` footprint, via DuckDB's
+     `spatial` extension, as `FootprintCell(..., weight)` with equal
+     weights summing to 1.0. An empty result means fall back to
+     `locate()` — a small polygon between nodes covers no centre. This is
+     the cheap half of item 7 below: no `pyproj`, no clipping, because it
+     samples node centres rather than area-weighting the polygon.
+   - **Follow-up (landed, uncommitted): structure pass over `grid.py`.**
+     - `GridNode` is now the shared pydantic base carrying `y_index`,
+       `x_index`, `grid_lat`, `grid_lon` and `key`; `GridCell` adds
+       `distance_km`, `FootprintCell` adds `weight`. Previously the two
+       models duplicated four fields and an identical `key` property.
+     - `max_snap_factor` and `batch_nodes` moved from mutable module
+       globals to `Grid` constructor keywords. The batching test used to
+       monkeypatch a module global with a try/finally; it now builds two
+       grids. Values are unchanged (`0.75`, `250_000`).
+     - `_window`'s slack is now derived from `max_snap_km` rather than
+       `spacing_km`, and its longitude margin is widened by `1 / cos(lat)`
+       to match the correction `_locate` already makes when ranking nodes.
+       **No bug was demonstrated here** — exhaustive brute force on
+       regular and converging LCC-like grids agrees with the windowed
+       search in every in-range case, and the old margin already exceeded
+       the half-cell-per-axis bound. The change is for self-consistency:
+       the margin is now tied to the tolerance that decides accept/reject,
+       so a custom `max_snap_factor` cannot silently outrun it.
+       `test_windowed_search_agrees_with_brute_force` guards this.
+     - `_spatial_connection` registers a dict of NumPy arrays instead of a
+       pandas `DataFrame`. **pandas was never a declared dependency** — it
+       only resolved because it arrives transitively; polars would have
+       needed `pyarrow`, which is not installed. The finite-node filter
+       stays in NumPy.
+     - Verified no cost: on a 1050×1050 domain the search window for the
+       110 committed places is 39×29 nodes, essentially unchanged, since
+       the places' own spread dominates the slack.
 2. ~~**Point/neighborhood extraction.**~~ **DONE** (`tstorm_climo/extract.py`).
    - Source field: **`precipitation_surface`** (GRIB short name `prate`),
      units kg m-2 s-1, "average precipitation rate since the previous
@@ -430,8 +465,8 @@ injected `opener`; no network in the fast test suite.
    Track event start hour-of-day, duration, and accumulation where the
    source supports it. Keep these rules as analysis options, not baked into
    the observation artifact.
-7. ~~**Spatial averaging over a course footprint.**~~ **Dropped for the
-   current point-sample analysis.** A generic 3×3 window is identical for
+7. ~~**Spatial averaging over a course footprint.**~~ **Partly landed;
+   still open.** A generic 3×3 window is identical for
    any two points in the same cell,
    so it blurs without separating. A true footprint average (area-weight
    the OSM polygon over covered cells) could separate some co-located
@@ -439,6 +474,12 @@ injected `opener`; no network in the fast test suite.
    geometry — two new dependencies and a schema change to resolve 3
    pairs out of 50 courses. Not worth it. Revisit only if a finer
    dataset becomes available.
+   - `Grid.cover_cells()` (see Phase 1) now delivers
+     node-centre-in-polygon with none of that cost. What is **still
+     missing** is the actual area weighting, the wiring into
+     `extract.py` / the climatology, and a decision on whether it earns
+     its place against the simpler point sample. Until then `cover_cells`
+     is built and tested but unused by the pipeline.
 8. **Threshold sensitivity study.** Compare wet fractions across
    thresholds (0, 0.1, 0.5, 1 mm/h — see the units note in open
    questions) and against `categorical_rain_surface`, which may be a

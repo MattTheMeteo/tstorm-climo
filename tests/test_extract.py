@@ -364,3 +364,82 @@ def test_unit_conversion_happens_after_slicing(monkeypatch) -> None:
     # Converter must see only the requested hours, never all 50.
     assert all(shape[0] <= 4 for shape in seen), seen
     assert out.height <= 4
+
+
+def wkb(wkt: str) -> bytes:
+    """Encode WKT as WKB using DuckDB's spatial extension."""
+    import duckdb
+
+    con = duckdb.connect()
+    try:
+        con.execute("INSTALL spatial; LOAD spatial;")
+        row = con.execute(
+            "SELECT ST_AsWKB(ST_GeomFromText(?))", [wkt]
+        ).fetchone()
+        assert row is not None
+        return bytes(row[0])
+    finally:
+        con.close()
+
+
+def box_wkt(
+    lat: np.ndarray,
+    lon: np.ndarray,
+    ys: list[int],
+    xs: list[int],
+    margin: float = 0.005,
+) -> str:
+    """A WKT polygon box around the given nodes, with a small margin."""
+    lats = [float(lat[y, x]) for y, x in zip(ys, xs, strict=True)]
+    lons = [float(lon[y, x]) for y, x in zip(ys, xs, strict=True)]
+    south, north = min(lats) - margin, max(lats) + margin
+    west, east = min(lons) - margin, max(lons) + margin
+    return (
+        f"POLYGON(({west} {north}, {east} {north}, {east} {south}, "
+        f"{west} {south}, {west} {north}))"
+    )
+
+
+def test_footprint_sampling_averages_covered_nodes() -> None:
+    """A polygon covering two nodes yields their equal-weighted mean."""
+    lat, lon = make_coords()
+    place = a_place(float(lat[2, 3]), float(lon[2, 3]), "Footprint", osm_id=1)
+    place = place.model_copy(
+        update={"geometry_wkb": wkb(box_wkt(lat, lon, [2, 2], [3, 4]))}
+    )
+    rate = np.zeros((1, N_Y, N_X))
+    rate[0, 2, 3] = 1e-5  # 0.036 mm/h
+    rate[0, 2, 4] = 3e-5  # 0.108 mm/h
+    out = extract_series(
+        [place],
+        "2025-07-01",
+        "2025-08-01",
+        opener=make_opener(rate, ["2025-07-15T00"]),
+    )
+    assert out[RATE_COLUMN].to_list() == pytest.approx([(0.036 + 0.108) / 2])
+
+
+def test_footprint_sampling_falls_back_when_polygon_covers_no_node() -> None:
+    """A polygon between nodes falls back to the nearest-node sample."""
+    lat, lon = make_coords()
+    mid_lat = (float(lat[2, 3]) + float(lat[3, 3])) / 2
+    mid_lon = (float(lon[2, 3]) + float(lon[2, 4])) / 2
+    d = 0.001
+    wkt = (
+        f"POLYGON(({mid_lon - d} {mid_lat + d}, {mid_lon + d} {mid_lat + d}, "
+        f"{mid_lon + d} {mid_lat - d}, {mid_lon - d} {mid_lat - d}, "
+        f"{mid_lon - d} {mid_lat + d}))"
+    )
+    place = a_place(float(lat[2, 3]), float(lon[2, 3]), "Tiny", osm_id=1)
+    place = place.model_copy(update={"geometry_wkb": wkb(wkt)})
+    rate = np.zeros((1, N_Y, N_X))
+    rate[0, 2, 3] = 1e-5
+    out = extract_series(
+        [place],
+        "2025-07-01",
+        "2025-08-01",
+        opener=make_opener(rate, ["2025-07-15T00"]),
+    )
+    assert out[RATE_COLUMN].to_list() == pytest.approx([0.036])
+    assert out["y_index"].to_list() == [2]
+    assert out["x_index"].to_list() == [3]

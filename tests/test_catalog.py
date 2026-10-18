@@ -7,12 +7,15 @@ matters, so SQL syntax and token semantics are checked without network.
 from __future__ import annotations
 
 import duckdb
+import polars as pl
 import pytest
 
 from tstorm_climo.catalog import (
     KIND_MATCHES,
     PLACES_SCHEMA,
     build_query,
+    deduplicate_places,
+    exclude_practice_facilities,
     kind_condition,
     match_source,
     match_tags,
@@ -290,6 +293,113 @@ def test_save_places_round_trips_real_wkb(tmp_path) -> None:
     assert restored.height == 1
     assert restored["geometry_wkb"][0] == bytes(wkb)
     assert len(restored["geometry_wkb"][0]) == len(bytes(wkb))
+
+
+def _place(
+    key: str,
+    osm_type: str,
+    osm_id: str,
+    name: str,
+    *,
+    kind: str = "golf_course",
+    lat: float = 42.0,
+    lon: float = -71.0,
+    geometry_type: str = "POLYGON",
+) -> dict:
+    return {
+        "place_key": key,
+        "osm_type": osm_type,
+        "osm_id": osm_id,
+        "name": name,
+        "kind": kind,
+        "lat": lat,
+        "lon": lon,
+        "geometry_wkb": b"",
+        "geometry_type": geometry_type,
+        "match_source": "leisure",
+    }
+
+
+def _frame(rows: list[dict]):
+    return pl.DataFrame(rows, schema=PLACES_SCHEMA)
+
+
+def test_exclude_practice_facilities_drops_ranges_keeps_courses() -> None:
+    frame = _frame(
+        [
+            _place("osm:way:1", "way", "1", "Fenway Driving Range"),
+            _place("osm:way:2", "way", "2", "Garrison Par 3 Golf Center"),
+            _place("osm:way:3", "way", "3", "Kohr Golf"),
+            _place("osm:way:4", "way", "4", "The Country Club"),
+        ]
+    )
+    out = exclude_practice_facilities(frame)
+    assert out["name"].to_list() == ["Garrison Par 3 Golf Center", "The Country Club"]
+
+
+def test_exclude_practice_facilities_only_applies_to_golf() -> None:
+    """The curation rule must not touch other kinds."""
+    frame = _frame(
+        [
+            _place("osm:way:1", "way", "1", "Fenway Driving Range", kind="beach"),
+            _place("osm:way:2", "way", "2", "Fenway Driving Range", kind="golf_course"),
+        ]
+    )
+    out = exclude_practice_facilities(frame)
+    assert out["kind"].to_list() == ["beach"]
+    assert out["name"].to_list() == ["Fenway Driving Range"]
+
+
+def test_deduplicate_places_collapses_duplicate_representations() -> None:
+    frame = _frame(
+        [
+            # One physical club mapped as a relation plus two ways.
+            _place("osm:relation:1", "relation", "1", "Vesper Country Club",
+                   lat=42.55, lon=-71.35, geometry_type="MULTIPOLYGON"),
+            _place("osm:way:2", "way", "2", "Vesper Country Club",
+                   lat=42.5501, lon=-71.3501, geometry_type="MULTIPOLYGON"),
+            _place("osm:way:3", "way", "3", "Vesper Country Club",
+                   lat=42.5502, lon=-71.3502, geometry_type="MULTIPOLYGON"),
+            # Two distinct same-named courses, far apart.
+            _place("osm:way:4", "way", "4", "Riverside Golf Course",
+                   lat=42.0, lon=-71.0),
+            _place("osm:way:5", "way", "5", "Riverside Golf Course",
+                   lat=43.0, lon=-73.0),
+        ]
+    )
+    out = deduplicate_places(frame)
+    assert out.height == 3
+    assert out.filter(pl.col("name") == "Vesper Country Club").height == 1
+    assert (
+        out.filter(pl.col("name") == "Vesper Country Club")["osm_type"].to_list()
+        == ["relation"]
+    )
+    assert out.filter(pl.col("name") == "Riverside Golf Course").height == 2
+
+
+def test_deduplicate_places_prefers_area_over_point() -> None:
+    frame = _frame(
+        [
+            _place("osm:node:1", "node", "1", "Point Golf",
+                   lat=42.0, lon=-71.0, geometry_type="POINT"),
+            _place("osm:way:2", "way", "2", "Point Golf",
+                   lat=42.0001, lon=-71.0001, geometry_type="POLYGON"),
+        ]
+    )
+    out = deduplicate_places(frame)
+    assert out.height == 1
+    assert out["geometry_type"].to_list() == ["POLYGON"]
+
+
+def test_deduplicate_places_keeps_differently_named_neighbors() -> None:
+    frame = _frame(
+        [
+            _place("osm:way:1", "way", "1", "Course A", lat=42.0, lon=-71.0),
+            _place("osm:way:2", "way", "2", "Course B", lat=42.0001, lon=-71.0001),
+        ]
+    )
+    out = deduplicate_places(frame)
+    assert out.height == 2
 
 
 def test_failed_write_leaves_no_partial_release(tmp_path) -> None:

@@ -52,6 +52,24 @@ uv run tstorm-climo fetch-places \
 `places_north_shore.csv` in this repository is a committed example built
 that way (50 golf courses, 60 named beaches).
 
+For a region-wide catalog with full OSM area geometries, build from a
+Geofabrik PBF. The PBF is downloaded to temporary storage and removed after
+the filtered catalog is written:
+
+```sh
+uv run tstorm-climo build-catalog \
+  --source geofabrik \
+  --region north-america/us/massachusetts \
+  --kind golf_course --kind beach \
+  --output artifacts/catalogs/massachusetts
+```
+
+LayerCake remains available with `--source layercake` (the default). To
+publish a finished release to S3, install the optional dependency with
+`uv sync --extra catalog-s3` and add `--s3-bucket BUCKET`. Catalog releases
+are uploaded under immutable keys; a source/region-specific `latest.json`
+pointer is updated only after both the Parquet and manifest are uploaded.
+
 Build a reusable hourly rain artifact for later interactive queries:
 
 ```sh
@@ -100,12 +118,13 @@ uv run ty check            # type check
 
 ## Status
 
-Implemented: HRRR data access, OSM place fetching, grid mapping,
-per-place rain extraction and summaries, the `rain-report` CLI, and a
-builder for reusable hourly rain Parquet artifacts. Snow analysis and a
-hosted marimo app are not implemented. The planned app will calculate in
-response to user choices from prepared artifacts, not fetch HRRR or Overpass
-data on each interaction.
+Implemented: HRRR data access, LayerCake and Geofabrik place-catalog builds,
+OSM place fetching, grid mapping, per-place rain extraction and summaries,
+the `rain-report` CLI, and reusable hourly rain Parquet artifacts. Geofabrik
+catalogs can optionally be published to S3. Snow analysis and a hosted marimo
+app are not implemented. The planned app will calculate in response to user
+choices from prepared artifacts, not fetch HRRR or Overpass data on each
+interaction.
 
 Pipeline: `places_north_shore.csv` (OSM via Overpass) → `Grid` maps each
 place to its nearest HRRR node → `extract_series` reads one contiguous

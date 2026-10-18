@@ -25,7 +25,7 @@ footprints rather than representative points.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -123,6 +123,32 @@ def kind_condition(kind: str) -> str:
 def match_source(kind: str) -> str:
     """Human-readable provenance for how a kind was identified."""
     return "+".join(column for column, _ in KIND_MATCHES[kind])
+
+
+def match_tags(
+    tags: Mapping[str, str], kinds: Sequence[str]
+) -> tuple[str, str] | None:
+    """Return the first requested kind matched by raw OSM tags.
+
+    Matching follows :data:`KIND_MATCHES` and treats semicolon-separated tag
+    values as exact tokens, the same semantics as :func:`kind_condition`.
+    The second return value lists the tag keys that matched.
+    """
+    for kind in kinds:
+        matches = KIND_MATCHES.get(kind)
+        if not matches:
+            raise KeyError(f"unknown place kind: {kind}")
+        matched_columns = []
+        for column, tokens in matches:
+            values = {
+                value.strip().casefold()
+                for value in tags.get(column, "").split(";")
+            }
+            if values.intersection(token.casefold() for token in tokens):
+                matched_columns.append(column)
+        if matched_columns:
+            return kind, "+".join(matched_columns)
+    return None
 
 
 def build_query(
@@ -248,6 +274,7 @@ def save_places(
     output_dir: str | Path,
     *,
     kinds: Sequence[str],
+    source: str = "layercake-osm-pois",
     source_url: str = LAYERCAKE_POIS_URL,
     extra_metadata: dict[str, Any] | None = None,
 ) -> Path:
@@ -285,7 +312,7 @@ def save_places(
         place_count=places.height,
         extra={
             "catalog": {
-                "source": "layercake-osm-pois",
+                "source": source,
                 "source_url": source_url,
                 "kinds": list(kinds),
                 "kind_match": {
@@ -300,6 +327,7 @@ def save_places(
                 "geometry_types": _geometry_counts(places),
                 "unnamed_count": places.filter(pl.col("name") == "").height,
                 "distinct_nodes_not_applicable": True,
+                **(extra_metadata or {}),
             },
             "attribution_override": {
                 "places": PLACES_ATTRIBUTION,

@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
+import httpx
 import polars as pl
 
 from tstorm_climo.artifacts import build_hourly_observation_artifact
 from tstorm_climo.catalog import KIND_MATCHES, fetch_places, save_places
+from tstorm_climo.catalog_storage import (
+    DEFAULT_CATALOG_PREFIX,
+    publish_catalog_to_s3,
+)
 from tstorm_climo.climatology import summarize_grid
 from tstorm_climo.extract import extract_series
+from tstorm_climo.geofabrik import build_geofabrik_catalog
 from tstorm_climo.hrrr import load_precipitation
 from tstorm_climo.osm import KIND_TAGS, build_query, run_query
 from tstorm_climo.places import deduplicate, from_overpass, load_csv, save_csv
@@ -160,6 +167,28 @@ def build_parser() -> argparse.ArgumentParser:
             "and manifest.json. Must not already exist."
         ),
     )
+    catalog.add_argument(
+        "--source",
+        choices=("layercake", "geofabrik"),
+        default="layercake",
+        help="Catalog source (default: layercake).",
+    )
+    catalog.add_argument(
+        "--region",
+        help=(
+            "Geofabrik region slug, e.g. north-america/us/massachusetts. "
+            "Required with --source geofabrik."
+        ),
+    )
+    catalog.add_argument(
+        "--s3-bucket",
+        help="Optionally publish the completed release to this S3 bucket.",
+    )
+    catalog.add_argument(
+        "--s3-prefix",
+        default=DEFAULT_CATALOG_PREFIX,
+        help=f"S3 key prefix (default: {DEFAULT_CATALOG_PREFIX}).",
+    )
 
     fetch = subparsers.add_parser(
         "fetch-places",
@@ -217,20 +246,7 @@ def main(argv: list[str] | None = None) -> int:
         return _rain_report(args)
 
     if args.command == "build-catalog":
-        bbox = tuple(args.bbox) if args.bbox else None
-        places = fetch_places(args.kind, bbox=bbox)
-        if places.height == 0:
-            print("No places matched.", file=sys.stderr)
-            return 1
-        release = save_places(
-            places, args.output, kinds=args.kind
-        )
-        counts = places.group_by("kind").len().sort("kind")
-        for row in counts.iter_rows():
-            print(f"  {row[0]}: {row[1]}")
-        print(f"Wrote {places.height} places to {release}")
-        print(f"Places: {PLACES_ATTRIBUTION}")
-        return 0
+        return _build_catalog(args)
 
     if args.command == "fetch-places":
         kinds = args.kind or list(KIND_TAGS)
@@ -250,6 +266,91 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     return 1
+
+
+def _build_catalog(args: argparse.Namespace) -> int:
+    """Create a local catalog release and optionally publish it to S3."""
+    bbox = tuple(args.bbox) if args.bbox else None
+    try:
+        if args.source == "geofabrik":
+            if not args.region:
+                print(
+                    "--region is required with --source geofabrik.",
+                    file=sys.stderr,
+                )
+                return 2
+            release = build_geofabrik_catalog(
+                args.region,
+                args.kind,
+                args.output,
+                bbox=bbox,
+            )
+        else:
+            if args.region:
+                print(
+                    "--region can only be used with --source geofabrik.",
+                    file=sys.stderr,
+                )
+                return 2
+            places = fetch_places(args.kind, bbox=bbox)
+            if places.height == 0:
+                print("No places matched.", file=sys.stderr)
+                return 1
+            release = save_places(
+                places,
+                args.output,
+                kinds=args.kind,
+                extra_metadata={"bbox": list(bbox) if bbox else None},
+            )
+
+        manifest = json.loads((release / "manifest.json").read_text())
+        counts = manifest["catalog"]["counts"]
+        for kind, count in sorted(counts.items()):
+            print(f"  {kind}: {count}")
+        print(f"Wrote {manifest['place_count']} places to {release}")
+        if args.s3_bucket:
+            pointer = publish_catalog_to_s3(
+                release,
+                args.s3_bucket,
+                prefix=_catalog_s3_prefix(args),
+            )
+            print(
+                f"Published {pointer['release_id']} to "
+                f"s3://{pointer['bucket']}/{pointer['latest_key']}"
+            )
+        print(f"Places: {PLACES_ATTRIBUTION}")
+    except (
+        FileExistsError,
+        httpx.HTTPError,
+        OSError,
+        RuntimeError,
+        ValueError,
+    ) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+def _catalog_s3_prefix(args: argparse.Namespace) -> str:
+    """Namespace latest pointers by source and region/query."""
+    base = args.s3_prefix.strip("/")
+    extent = _bbox_s3_scope(args.bbox)
+    if args.source == "geofabrik":
+        scope = f"geofabrik/{args.region.strip('/')}/{extent}"
+    else:
+        kinds = "+".join(sorted(args.kind))
+        scope = f"layercake/{kinds}/{extent}"
+    return f"{base}/{scope}" if base else scope
+
+
+def _bbox_s3_scope(bbox: list[float] | None) -> str:
+    """Return a stable key fragment for a bounding box or whole region."""
+    if bbox is None:
+        return "full"
+    bounds = "-".join(
+        f"{value:.4f}".replace("-", "m").replace(".", "p") for value in bbox
+    )
+    return f"bbox-{bounds}"
 
 
 def _build_observations(args: argparse.Namespace) -> int:

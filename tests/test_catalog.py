@@ -15,6 +15,7 @@ from tstorm_climo.catalog import (
     build_query,
     kind_condition,
     match_source,
+    match_tags,
     quote,
     save_places,
     token_clause,
@@ -86,6 +87,7 @@ def test_token_matching_semantics(value, expected: bool) -> None:
         + token_clause("sport", ("skiing", "ski", "ski_jumping", "snowboarding"))
         + f" FROM (SELECT {literal} AS sport)"
     ).fetchone()
+    assert got is not None
     assert bool(got[0]) is expected
 
 
@@ -144,6 +146,13 @@ def test_empty_kinds_raises() -> None:
 def test_match_source_lists_columns() -> None:
     assert match_source("golf_course") == "leisure"
     assert match_source("ski_area") == "sport+landuse"
+
+
+def test_raw_tag_match_uses_exact_semicolon_tokens() -> None:
+    assert match_tags(
+        {"sport": "skiing;ice_skating"}, ["ski_area"]
+    ) == ("ski_area", "sport")
+    assert match_tags({"sport": "skittles"}, ["ski_area"]) is None
 
 
 def test_build_query_is_valid_sql() -> None:

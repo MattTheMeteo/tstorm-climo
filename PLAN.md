@@ -253,45 +253,49 @@ injected `opener`; no network in the fast test suite.
      - Worst single cell overall is `y=272 x=1621` (42.5770, -70.7472),
        holding 4 places: Essex County Club plus Black, Graves and
        Singing Beaches, spread 2.64 km.
+     - **These counts are point-sampled** (the committed places CSV has
+       no footprint geometry) and were measured on the anchor node.
+       `cell_places` now keys on the sampled node *set*, so they do not
+       describe footprint-sampled places and must be recomputed — see
+       item 7.
    - A 3×3 neighbourhood average was **considered and rejected**: it
      costs 9× the reads and does not separate co-located places, since
      they share the window too. It would only blur the grid, not sharpen
      the answer.
-   - **Follow-up (landed, uncommitted): polygon footprints.**
-     `Grid.cover_cells(geometry_wkb)` returns the nodes whose centres fall
-     inside an OSM `POLYGON`/`MULTIPOLYGON` footprint, via DuckDB's
-     `spatial` extension, as `FootprintCell(..., weight)` with equal
-     weights summing to 1.0. An empty result means fall back to
-     `locate()` — a small polygon between nodes covers no centre. This is
-     the cheap half of item 7 below: no `pyproj`, no clipping, because it
-     samples node centres rather than area-weighting the polygon.
-   - **Follow-up (landed, uncommitted): structure pass over `grid.py`.**
-     - `GridNode` is now the shared pydantic base carrying `y_index`,
+   - **Polygon footprints.** `Grid.cover_cells(geometry_wkb)` returns the
+     nodes whose centres fall inside an OSM `POLYGON`/`MULTIPOLYGON`
+     footprint, via DuckDB's `spatial` extension, as
+     `FootprintCell(..., weight)` with equal weights summing to 1.0. An
+     empty result means fall back to `locate()` -- a small polygon between
+     nodes covers no centre. This is the cheap half of item 7 below: no
+     `pyproj`, no clipping, because it samples node centres rather than
+     area-weighting the polygon.
+   - **Structure pass over `grid.py`.**
+     - `GridNode` is the shared pydantic base carrying `y_index`,
        `x_index`, `grid_lat`, `grid_lon` and `key`; `GridCell` adds
        `distance_km`, `FootprintCell` adds `weight`. Previously the two
        models duplicated four fields and an identical `key` property.
-     - `max_snap_factor` and `batch_nodes` moved from mutable module
-       globals to `Grid` constructor keywords. The batching test used to
-       monkeypatch a module global with a try/finally; it now builds two
-       grids. Values are unchanged (`0.75`, `250_000`).
-     - `_window`'s slack is now derived from `max_snap_km` rather than
-       `spacing_km`, and its longitude margin is widened by `1 / cos(lat)`
+     - `max_snap_factor` and `batch_nodes` are `Grid` constructor keywords
+       instead of mutable module globals, so the batching test builds two
+       grids rather than monkeypatching. Values unchanged (`0.75`,
+       `250_000`).
+     - `_window`'s slack derives from `max_snap_km` rather than
+       `spacing_km`, with the longitude margin widened by `1 / cos(lat)`
        to match the correction `_locate` already makes when ranking nodes.
-       **No bug was demonstrated here** — exhaustive brute force on
-       regular and converging LCC-like grids agrees with the windowed
-       search in every in-range case, and the old margin already exceeded
-       the half-cell-per-axis bound. The change is for self-consistency:
-       the margin is now tied to the tolerance that decides accept/reject,
-       so a custom `max_snap_factor` cannot silently outrun it.
+       **No bug was demonstrated** -- exhaustive brute force on regular
+       and converging LCC-like grids agrees with the windowed search in
+       every in-range case, and the old margin already exceeded the
+       half-cell-per-axis bound. The change is for self-consistency: the
+       margin is tied to the tolerance that decides accept/reject, so a
+       custom `max_snap_factor` cannot silently outrun it.
        `test_windowed_search_agrees_with_brute_force` guards this.
      - `_spatial_connection` registers a dict of NumPy arrays instead of a
-       pandas `DataFrame`. **pandas was never a declared dependency** — it
-       only resolved because it arrives transitively; polars would have
-       needed `pyarrow`, which is not installed. The finite-node filter
-       stays in NumPy.
-     - Verified no cost: on a 1050×1050 domain the search window for the
-       110 committed places is 39×29 nodes, essentially unchanged, since
-       the places' own spread dominates the slack.
+       pandas `DataFrame`. **pandas was never a declared dependency** --
+       it only resolved transitively; polars would have needed `pyarrow`,
+       which is not installed. The finite-node filter stays in NumPy.
+     - No measurable cost: on a 1050x1050 domain the search window for the
+       110 committed places is 39x29 nodes, unchanged, since the places'
+       own spread dominates the slack.
 2. ~~**Point/neighborhood extraction.**~~ **DONE** (`tstorm_climo/extract.py`).
    - Source field: **`precipitation_surface`** (GRIB short name `prate`),
      units kg m-2 s-1, "average precipitation rate since the previous
@@ -313,9 +317,10 @@ injected `opener`; no network in the fast test suite.
      archive gaps, not zero rain.
    - No threshold applied here — that belongs to the summary layer.
    - Measured: 50 courses × 8 years = 3.5 M rows in **14 s**.
-   - Per place, extract the hourly precipitation time series at the
-     nearest grid point. Single-point only: the 3×3 neighborhood was
-     considered and rejected (see the note in step 1 above).
+   - Per place, the hourly series is the mean over the grid nodes its
+     footprint covers, or the nearest grid point when it has no polygon.
+     The 3×3 neighborhood was considered and rejected (see step 1 above).
+     Footprint sampling is described in item 7.
    - Read the places' bounding box as one contiguous block and index in
      memory, rather than issuing a scattered read per place (the archive
      chunks y/x at 135 km, so point reads are cheap, scattered reads
@@ -326,8 +331,9 @@ injected `opener`; no network in the fast test suite.
    `> 0` end of the range stays available for "the turf was damp".
    - `place_summary` → per place: `valid_hours`/`coverage` (data
      quality), `wet_hours`/`wet_fraction`, `rain_mm` (depth; each step
-     is one hour so mm/h sums to mm), `tied`/`cell_places` (grid-node
-     collisions), and a dense `rank` where 1 is driest.
+     is one hour so mm/h sums to mm), `tied`/`cell_places` (places
+     reading the same set of grid nodes), and a dense `rank` where 1 is
+     driest.
    - `by_local_month`, `by_local_hour` → slices in **local** time,
      normalized by hours observed (a local hour seen 12 times and wet 6
      times is 0.5, not 1.0).
@@ -469,46 +475,38 @@ injected `opener`; no network in the fast test suite.
    source supports it. Keep these rules as analysis options, not baked into
    the observation artifact.
 7. ~~**Spatial averaging over a course footprint.**~~ **Landed**
-    (node-centre averaging). A generic 3x3 window is identical for
-    any two points in the same cell,
-    so it blurs without separating. A true footprint average (area-weight
-    the OSM polygon over covered cells) could separate some co-located
-    courses, but needs `pyproj` + polygon-clipping and re-fetching
-    geometry — two new dependencies and a schema change to resolve 3
-    pairs out of 50 courses. Not worth it. Revisit only if a finer
-    dataset becomes available.
-    - `Grid.cover_cells()` delivers node-centre-in-polygon with none of
-      that cost, and `extract_series` now averages covered nodes with
-      equal weights, falling back to the nearest node for point or
-      uncovered places.
-    - **The full footprint is recorded, not just the anchor.** Artifacts
-      gained a `sampling.parquet` table (one row per place/node) plus
-      `sampling` / `n_cells` / `sampling_key` columns on the
-      observations (schema v2). The pre-existing anchor columns kept
-      their meaning, which is the trap they always were: a footprint
-      place sitting exactly on its anchor reports `snap_distance_km = 0`
-      while averaging several nodes. `n_cells` is what exposes that.
-    - **`cell_places` / `tied` were re-keyed onto `sampling_key`.** They
+    (node-centre averaging). A generic 3x3 window is identical for any two
+    points in the same cell, so it blurs without separating. True area
+    weighting of the OSM polygon would need `pyproj` + polygon-clipping
+    and re-fetching geometry -- two new dependencies to resolve 3 pairs out
+    of 50 courses. Not worth it; revisit only if a finer dataset appears.
+    - `Grid.cover_cells()` gives node-centre-in-polygon for none of that
+      cost, and `extract_series` averages covered nodes with equal
+      weights, falling back to the nearest node for point or uncovered
+      places.
+    - **The footprint is recorded, not just the anchor.** Artifacts gained
+      `sampling.parquet` (one row per place/node) plus `sampling`,
+      `n_cells`, `sampling_key` on the observations (schema v2). The
+      anchor columns kept their old meaning, which is the trap they always
+      were: a footprint place sitting exactly on its anchor reports
+      `snap_distance_km = 0` while averaging several nodes. `n_cells`
+      exposes that.
+    - **`cell_places` / `tied` are re-keyed onto `sampling_key`.** They
       grouped on the anchor node, which stopped describing the sampling
-      once footprints applied: two courses sharing an anchor but
-      averaging disjoint node sets were reported as unrankable, and vice
-      versa. The honest test is whether two places read the *same* node
-      set. **The Phase 1 resolution numbers ("86 distinct nodes", "3
-      unrankable pairs") therefore no longer apply to footprint-sampled
-      places and must be recomputed before publication.** Places sharing
-      only some nodes are coupled but distinguishable, so they are not
-      marked tied; a partial-overlap metric (Jaccard) is a reasonable
-      follow-up.
+      once footprints applied -- two courses sharing an anchor but
+      averaging disjoint node sets were called unrankable, and vice versa.
+      The honest test is whether two places read the *same* node set.
+      Places sharing only some nodes are coupled but distinguishable, so
+      they are not marked tied; a Jaccard overlap metric is a reasonable
+      follow-up. **The Phase 1 resolution numbers therefore no longer
+      apply to footprint-sampled places.**
+    - `rain-report` reads through `load_places` as well, so both it and
+      `build-observations` accept a catalog parquet and average footprints.
+      The printed caveat text was updated to match.
     - **Still open:** re-run the North Shore leaderboard on footprint
       sampling and compare against the point-sampled baseline. Filtering
       `sampling == "point"` in a v2 artifact reproduces the old numbers
       exactly, so that comparison is a filter rather than a rebuild.
-    - `rain-report` now reads through `load_places` as well, so it
-      accepts a catalog `places.parquet` and averages footprints the same
-      way `build-observations` does. Both `--places` arguments advertise
-      both inputs. The printed caveat text was updated too: it described
-      tying as "sharing a grid node", which stopped being the rule once
-      footprints apply.
 8. **Threshold sensitivity study.** Compare wet fractions across
    thresholds (0, 0.1, 0.5, 1 mm/h — see the units note in open
    questions) and against `categorical_rain_surface`, which may be a
@@ -518,22 +516,31 @@ injected `opener`; no network in the fast test suite.
 
 ### Phase 3: Offline hourly observation artifacts
 
-9. **Build hourly artifacts for interactive queries.** **DONE for rain v1.**
+9. **Build hourly artifacts for interactive queries.** **DONE for rain v2.**
    `build-observations --places/--start/--end/--output` calls
    `extract_series` and writes a new output directory containing
-   `observations.parquet`, `places.parquet`, and `manifest.json`. The
-   observation schema includes `place_key, time_utc, variable, value,
-   valid` plus grid-sampling details. The current builder supports only
+   `observations.parquet`, `places.parquet`, `sampling.parquet`, and
+   `manifest.json`. The observation schema includes `place_key, time_utc,
+   variable, value, valid` plus grid-sampling details (`sampling`,
+   `n_cells`, `sampling_key`, and the anchor node). `sampling.parquet`
+   records every node each place was averaged over, so a value can always
+   be traced back to its inputs. The current builder supports only
    `rain_rate`; it does not apply a wet threshold. The output directory is
    not overwritten, so each build is an immutable artifact bundle. Add
    additional variables after their source fields and units are validated.
 10. **Harden and describe the artifact.** The initial manifest records the
     dataset/source field, normalized units, requested and observed date
     range, place-catalog content hash, build time, row counts, valid fraction,
-    and attribution. Keep `place_key` and validity information end-to-end.
+    attribution, and a `sampling_cells` block (row count, columns, and how
+    many places fell back to a point sample). Keep `place_key` and validity
+    information end-to-end.
     Follow-up: add software/code version and assess completeness against the
     expected hourly timeline, since a missing timestamp entirely is not
-    currently counted in `valid_fraction`. Start with one region and one
+    currently counted in `valid_fraction`. `schema_version` is written but
+    never validated on read, so a consumer cannot yet tell a v1 bundle (no
+    sampling columns) from a v2 one; `summarize` synthesises the missing
+    columns, which is exact for v1 but would paper over a real gap later.
+    Start with one region and one
     Parquet file; partition by variable/year only if filtered reads need it.
     The hourly artifact currently stores the scalar `Place` snapshot used
     for extraction; it does not duplicate catalog WKB geometry. The catalog
@@ -628,11 +635,14 @@ injected `opener`; no network in the fast test suite.
     Treat representative-point sampling as an explicit initial method;
     large or elongated attractions may need footprint summaries. Continue
     to support bbox-driven place catalogs and show region coverage.
-21. **Use retained geometry when justified.** Once geometry is available,
-    draw attraction outlines and assess grid-cell/footprint summaries for
-    large beaches and ski areas. Keep the representative point for simple
-    lookup and fallback. Evaluate the benefit against HRRR's 3 km resolution
-    before making footprint aggregation the default.
+21. **Use retained geometry when justified.** Geometry now flows from the
+    catalog through `Place.geometry_wkb` into footprint sampling (item 7),
+    so the remaining work is presentational and evaluative: draw attraction
+    outlines, and assess footprint summaries for large beaches and ski
+    areas. The representative point is still the right thing for simple
+    lookup and for the fallback when a polygon covers no node centre.
+    Footprint aggregation should become the default only once its benefit
+    is measured against HRRR's 3 km resolution.
 22. **More weather variables and sources.** Add a variable only after its
     source field, units, temporal meaning, and summary interpretation are
     validated. Keep the user-facing variable registry separate from OSM
@@ -642,17 +652,20 @@ injected `opener`; no network in the fast test suite.
 ## Open design questions
 
 - **Co-located places (decided: report, don't hide).** 18 grid nodes hold
-  more than one place, so those places share identical wet-hour counts.
-  For the golf leaderboard this affects **3 pairs (6 of 50 courses)**.
-  Options considered:
-  1. *(chosen)* Add a `grid_cell` column, rank within cells, and label
-     unresolved pairs explicitly — "these 3 pairs cannot be separated by
-     this data" beats a precise-looking wrong number.
+  more than one place, so under point sampling those places share
+  identical wet-hour counts. For the golf leaderboard this affects **3
+  pairs (6 of 50 courses)**.
+  1. *(chosen)* Flag them: `place_summary` emits `tied` and
+     `cell_places`, and `scorecard` keeps tied places adjacent so the
+     shared node is obvious. A precise-looking wrong number is worse than
+     "these 3 pairs cannot be separated by this data".
   2. Naive ranking with a footnote — rejected, because the footnote is
      the only signal and it is easy to miss.
   The course-vs-beach overlaps (7 courses) need no treatment beyond a
-  note. If finer separation is ever genuinely needed, the only real fix
-  is a finer dataset, not a different sampling of HRRR.
+  note. The flag now keys on the sampled node *set* rather than the anchor
+  node, so it stays correct once footprints apply — see item 7. If finer
+  separation is ever genuinely needed, the only real fix is a finer
+  dataset, not a different sampling of HRRR.
 - **Wet threshold — units corrected, conversion centralized.** The archive
   stores `precipitation_surface` in **kg m-2 s-1**, where 1 kg m-2 s-1 =
   1 mm/s = **3600 mm/h**. An earlier draft of this file proposed `0.01`
@@ -665,10 +678,10 @@ injected `opener`; no network in the fast test suite.
   Thresholds are now written in **mm/h** everywhere and the conversion
   lives once in `hrrr.to_mm_per_hour` (see the unit convention above),
   so this class of error should not recur.
-   The default for both per-place summaries and the grid-wide sanity
-   check is **0.05 mm/h**, shared from `thresholds.py`. Ranking reliability
-   remains an empirical property of the selected threshold and is reported
-   alongside leaderboards. `> 0` remains the "turf was damp" end of
+  The default for both per-place summaries and the grid-wide sanity
+  check is **0.05 mm/h**, shared from `thresholds.py`. Ranking reliability
+  remains an empirical property of the selected threshold and is reported
+  alongside leaderboards. `> 0` remains the "turf was damp" end of
   the range but is near-useless for ordering places (r = 0.11).
 - **Event definition.** Minimum duration/separation for counting
   separate rain events (two wet hours with a dry hour between: two

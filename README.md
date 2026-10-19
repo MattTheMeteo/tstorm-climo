@@ -79,11 +79,16 @@ uv run tstorm-climo build-observations \
   --output artifacts/north-shore/rain-2018-2025
 ```
 
+`--places` takes either that CSV or a catalog's `places.parquet`, which
+carries OSM footprint geometry.
+
 The new output directory contains `observations.parquet`, `places.parquet`,
-and `manifest.json`. Observations use stable `place_key` values, UTC times,
-the `rain_rate` variable in mm/h, and an explicit validity flag. The builder
-does not apply a wet threshold. It will not overwrite an existing output
-directory; choose a new path for each artifact build.
+`sampling.parquet`, and `manifest.json`. Observations use stable `place_key`
+values, UTC times, the `rain_rate` variable in mm/h, and an explicit
+validity flag. `sampling.parquet` has one row per place per grid node
+actually averaged — the authoritative record of how each value was
+produced. The builder does not apply a wet threshold. It will not overwrite
+an existing output directory; choose a new path for each artifact build.
 
 Rank places by how often it rains on them — the Chuck leaderboard:
 
@@ -100,12 +105,13 @@ report.parquet` writes the summary with a `.meta.json` sidecar recording
 the archive, date range, threshold, reliability figure, and the CC-BY /
 ODbL attribution. This is a fixed-range summary, not the hourly data
 artifact needed to recalculate arbitrary date ranges in an interactive app.
+`--places` takes the same CSV or catalog parquet as `build-observations`.
 
 The report always prints its **split-half reliability** alongside the
 table. It is calculated for the selected threshold and period; read it
 before trusting the ordering. Low reliability means the ranking may
-mostly reflect which years were sampled. Places sharing a grid node are
-marked `tied`.
+mostly reflect which years were sampled. Places read from the same *set*
+of grid nodes get identical numbers and are marked `tied`.
 
 ## Development
 
@@ -119,18 +125,20 @@ uv run ty check            # type check
 ## Status
 
 Implemented: HRRR data access, LayerCake and Geofabrik place-catalog builds,
-OSM place fetching, grid mapping, per-place rain extraction and summaries,
-the `rain-report` CLI, and reusable hourly rain Parquet artifacts. Geofabrik
-catalogs can optionally be published to S3. Snow analysis and a hosted marimo
-app are not implemented. The planned app will calculate in response to user
-choices from prepared artifacts, not fetch HRRR or Overpass data on each
-interaction.
+OSM place fetching, grid mapping, footprint and point sampling, per-place
+rain extraction and summaries, the `rain-report` CLI, and reusable hourly
+rain Parquet artifacts. Geofabrik catalogs can optionally be published to
+S3. Snow analysis and a hosted marimo app are not implemented. The planned
+app will calculate in response to user choices from prepared artifacts, not
+fetch HRRR or Overpass data on each interaction.
 
-Pipeline: `places_north_shore.csv` (OSM via Overpass) → `Grid` maps each
-place to its nearest HRRR node → `extract_series` reads one contiguous
-grid block and returns an hourly series keyed by stable OSM `place_key` →
-`summarize.place_summary` / `by_local_month` / `by_local_hour` /
-`scorecard` produce the per-place tables.
+Pipeline: places (OSM via Overpass as CSV, or a Geofabrik/LayerCake catalog
+with geometry) → `Grid` maps each place to its HRRR nodes — every node its
+polygon footprint covers, or the single nearest node when it has no
+footprint → `extract_series` reads one contiguous grid block and returns an
+hourly series keyed by stable OSM `place_key` → `summarize.place_summary` /
+`by_local_month` / `by_local_hour` / `scorecard` produce the per-place
+tables.
 
 Rain detection uses `precipitation_surface` (hourly-average rate) from
 the dynamical.org HRRR analysis archive, converted from kg m-2 s-1 to
@@ -138,9 +146,11 @@ the dynamical.org HRRR analysis archive, converted from kg m-2 s-1 to
 
 Two caveats worth knowing before reading any output:
 
-- **A 3 km grid cannot separate co-located places.** The 50 golf
-  courses occupy only 47 grid nodes; 6 courses form 3 pairs that share a
-  node and therefore get identical numbers. They are flagged `tied`.
+- **A 3 km grid cannot separate co-located places.** With point sampling
+  (the committed `places_north_shore.csv` has no footprint geometry), the
+  50 golf courses occupy 47 nodes and 6 of them form 3 pairs that share a
+  node, so each pair gets identical numbers and is flagged `tied`.
+  Footprint sampling may separate some of these.
 - **Rankings can be dominated by sampling noise.** The report calculates
   `summarize.split_half_reliability` for the chosen period and threshold;
   see `PLAN.md` for measured results and limitations. A leaderboard should

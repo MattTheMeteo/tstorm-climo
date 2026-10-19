@@ -1,66 +1,44 @@
-"""Tests for the LayerCake place-catalog builder.
+"""Tests for the shared catalog schema, tag matching, and release writing.
 
-Query text is asserted against a real DuckDB in-memory database where it
-matters, so SQL syntax and token semantics are checked without network.
+Tag semantics are checked against :func:`match_tags`, which is what the
+Geofabrik builder actually runs. No network, and no DuckDB query text to
+keep in sync now that the remote-parquet source is gone.
 """
 
 from __future__ import annotations
 
-import duckdb
 import polars as pl
 import pytest
 
 from tstorm_climo.catalog import (
     KIND_MATCHES,
     PLACES_SCHEMA,
-    build_query,
     deduplicate_places,
     exclude_practice_facilities,
-    kind_condition,
     match_source,
     match_tags,
-    quote,
     save_places,
-    token_clause,
 )
 
-# A miniature stand-in for the LayerCake schema: same column names,
-# same reserved-word landmines, same semicolon-joined tag lists.
-MINI = """
-CREATE TABLE pois AS SELECT * FROM (VALUES
-    ('way', 1, 'Test Golf',            'golf_course', '',              '', 'POINT'),
-    ('way', 2, 'Alpine Valley', 'sports_centre', 'skiing', '', 'POLYGON'),
-    ('way', 3, 'Abenaki', '', 'skiing;ice_skating', '', 'POLYGON'),
-    ('way', 4, 'Sugarbush', '', '', 'winter_sports', 'POLYGON'),
-    ('way', 5, 'Old Time Bowl', 'pitch', 'skittles', '', 'POLYGON'),
-    ('way', 6, 'Cape Beach',           '',              '',              '', 'POLYGON'),
-    ('way', 7, 'Nordic Trail', '', 'ski;snowboard', '', 'POLYGON'),
-    ('way', 8, 'Water Ski Dock', '', 'water_ski', '', 'POINT'),
-    ('node', 9, 'Point Golf',          'golf_course',   '',           '', 'POINT')
-) AS t("type", "id", "name", "leisure", "sport", "landuse", "geometry_type");
-UPDATE pois SET geometry_type = ST_AsText(
-    ST_Point(0, 0)) WHERE geometry_type = 'POINT';
-SELECT count(*) FROM pois;
-"""
+# (name, tags). The same rows the old DuckDB fixture held, with the same
+# reserved-word columns and semicolon-joined tag lists, so the semantic
+# cases below carry over unchanged.
+MINI: list[tuple[str, dict[str, str]]] = [
+    ("Test Golf", {"leisure": "golf_course"}),
+    ("Alpine Valley", {"leisure": "sports_centre", "sport": "skiing"}),
+    ("Abenaki", {"sport": "skiing;ice_skating"}),
+    ("Sugarbush", {"landuse": "winter_sports"}),
+    ("Old Time Bowl", {"leisure": "pitch", "sport": "skittles"}),
+    ("Cape Beach", {"natural": "beach"}),
+    ("Nordic Trail", {"sport": "ski;snowboard"}),
+    ("Water Ski Dock", {"sport": "water_ski"}),
+    ("Point Golf", {"leisure": "golf_course"}),
+]
 
 
-def connect() -> duckdb.DuckDBPyConnection:
-    con = duckdb.connect()
-    con.execute("INSTALL spatial; LOAD spatial;")
-    con.execute(MINI)
-    return con
-
-
-def test_quote_escapes_embedded_quotes() -> None:
-    assert quote("sport") == '"sport"'
-    assert quote('a"b') == '"a""b"'
-
-
-def test_token_clause_splits_on_semicolons() -> None:
-    sql = token_clause("sport", ("skiing",))
-    assert "string_split" in sql
-    assert "list_position" in sql
-    assert "';'" in sql
+def matched_names(kinds: list[str]) -> set[str]:
+    """Names of the MINI rows that match any of ``kinds``."""
+    return {name for name, tags in MINI if match_tags(tags, kinds) is not None}
 
 
 @pytest.mark.parametrize(
@@ -80,35 +58,24 @@ def test_token_clause_splits_on_semicolons() -> None:
 def test_token_matching_semantics(value, expected: bool) -> None:
     """The core correctness rule: token match, not substring match.
 
-    Parameterized over a synthetic one-row table so every case has a row
-    to match; the shared MINI fixture only covers a few of them.
+    A prefix match like ``LIKE 'ski%'`` would wrongly accept
+    ``skittles`` and ``water_ski``.
     """
-    con = duckdb.connect()
-    literal = "NULL" if value is None else f"'{value}'"
-    got = con.sql(
-        "SELECT "
-        + token_clause("sport", ("skiing", "ski", "ski_jumping", "snowboarding"))
-        + f" FROM (SELECT {literal} AS sport)"
-    ).fetchone()
-    assert got is not None
-    assert bool(got[0]) is expected
+    tags = {"sport": value} if value is not None else {}
+    got = match_tags(tags, ["ski_area"]) is not None
+    assert got is expected
 
 
 def test_skittles_is_not_matched_as_skiing() -> None:
-    """Guards the prefix-match bug: LIKE 'ski%' catches this."""
-    con = connect()
-    clause = kind_condition("ski_area")
-    rows = con.sql(f"SELECT name FROM pois WHERE {clause}").fetchall()
-    names = {r[0] for r in rows}
+    """Guards the prefix-match bug: LIKE 'ski%' catches these."""
+    names = matched_names(["ski_area"])
     assert "Old Time Bowl" not in names
     assert "Water Ski Dock" not in names
 
 
 def test_ski_area_needs_both_tagging_paths() -> None:
     """Neither column alone is sufficient (see PLAN.md)."""
-    con = connect()
-    clause = kind_condition("ski_area")
-    names = {r[0] for r in con.sql(f"SELECT name FROM pois WHERE {clause}").fetchall()}
+    names = matched_names(["ski_area"])
     # sport-only tagging
     assert "Alpine Valley" in names
     # semicolon list
@@ -118,22 +85,16 @@ def test_ski_area_needs_both_tagging_paths() -> None:
 
 
 def test_golf_course_matches_leisure_only() -> None:
-    con = connect()
-    clause = kind_condition("golf_course")
-    names = {r[0] for r in con.sql(f"SELECT name FROM pois WHERE {clause}").fetchall()}
-    assert names == {"Test Golf", "Point Golf"}
+    assert matched_names(["golf_course"]) == {"Test Golf", "Point Golf"}
+
+
+def test_beach_matches_natural_beach() -> None:
+    assert matched_names(["beach"]) == {"Cape Beach"}
 
 
 def test_unknown_kind_raises() -> None:
     with pytest.raises(KeyError, match="unknown place kind"):
-        kind_condition("skiing_thing")
-    with pytest.raises(KeyError):
-        build_query(["not_a_kind"])
-
-
-def test_empty_kinds_raises() -> None:
-    with pytest.raises(ValueError, match="at least one kind"):
-        build_query([])
+        match_tags({"sport": "skiing"}, ["skiing_thing"])
 
 
 def test_match_source_lists_columns() -> None:
@@ -149,76 +110,9 @@ def test_raw_tag_match_uses_exact_semicolon_tokens() -> None:
     assert match_tags({"sport": "skittles"}, ["ski_area"]) is None
 
 
-def test_build_query_is_valid_sql() -> None:
-    """The generated SQL must parse and run, checked without network."""
-    con = duckdb.connect()
-    con.execute("INSTALL spatial; LOAD spatial;")
-    con.execute("""
-        CREATE TABLE pois AS SELECT * FROM (VALUES
-            ('way', 1, 'Test Golf', 'golf_course', '', '', 'skittles'),
-            ('way', 4, 'Sugarbush', '', '', 'winter_sports', '')
-        ) AS t("type", "id", "name", "leisure", "sport", "landuse", "junk");
-        ALTER TABLE pois ADD COLUMN geometry GEOMETRY;
-        UPDATE pois SET geometry = ST_Point(-71.0, 42.0);
-    """)
-    query = build_query(["golf_course", "ski_area"])
-    # read_parquet() needs a path; swap the whole FROM for the table.
-    local = query.replace(
-        "FROM read_parquet('https://data.openstreetmap.us/layercake/pois.parquet')",
-        "FROM pois",
-    )
-    assert "FROM pois" in local
-    rows = con.sql(local).fetchall()
-    kinds = {r[4] for r in rows}
-    assert kinds == {"golf_course", "ski_area"}
-    # place_key format matches the rest of the project.
-    assert {r[0] for r in rows} == {"osm:way:1", "osm:way:4"}
-
-
-def test_build_query_emits_all_schema_columns() -> None:
-    for column in PLACES_SCHEMA:
-        assert f"AS {column}" in build_query(["golf_course"]) or column in (
-            "geometry_wkb",
-        )
-
-
 def test_kinds_all_have_matches() -> None:
     for kind in ("golf_course", "beach", "ski_area"):
         assert KIND_MATCHES[kind]
-
-
-def test_fetch_places_returns_schema(tmp_path) -> None:
-    """End-to-end over a local file, with no network."""
-    import polars as pl
-
-    frame = pl.DataFrame(
-        {
-            "place_key": ["osm:way:1", "osm:way:4"],
-            "osm_type": ["way", "way"],
-            "osm_id": ["1", "4"],
-            "name": ["Test Golf", "Sugarbush"],
-            "kind": ["golf_course", "ski_area"],
-            "lat": [42.0, 44.0],
-            "lon": [-71.0, -72.0],
-            "geometry_wkb": [b"", b""],
-            "geometry_type": ["POLYGON", "POLYGON"],
-            "match_source": ["leisure", "sport+landuse"],
-        },
-        schema=PLACES_SCHEMA,
-    )
-    out = save_places(frame, tmp_path / "catalog", kinds=["golf_course", "ski_area"])
-    assert (out / "places.parquet").exists()
-    assert (out / "manifest.json").exists()
-
-    import json
-
-    manifest = json.loads((out / "manifest.json").read_text())
-    assert manifest["catalog"]["counts"] == {
-        "golf_course": 1,
-        "ski_area": 1,
-    }
-    assert manifest["catalog"]["match_source"]["ski_area"] == "sport+landuse"
-    assert "ODbL" in manifest["attribution"]["places"]
 
 
 def test_save_places_refuses_to_overwrite(tmp_path) -> None:
@@ -241,7 +135,13 @@ def test_save_places_refuses_to_overwrite(tmp_path) -> None:
     )
     (tmp_path / "catalog").mkdir()
     with pytest.raises(FileExistsError):
-        save_places(frame, tmp_path / "catalog", kinds=["golf_course"])
+        save_places(
+            frame,
+            tmp_path / "catalog",
+            kinds=["golf_course"],
+            source="test-source",
+            source_url="https://example.invalid/test",
+        )
 
 
 def test_save_places_round_trips_real_wkb(tmp_path) -> None:
@@ -260,7 +160,7 @@ def test_save_places_round_trips_real_wkb(tmp_path) -> None:
         "SELECT ST_AsWKB(ST_GeomFromText('POLYGON((0 0, 1 0, 1 1, 0 0))')) AS wkb"
     ).fetchnumpy()["wkb"][0]
 
-    # Mirror fetch_places' conversion, then write.
+    # Mirror the byte conversion the remote reader used to do, then write.
     bytes_column = [bytes(v) if v is not None else None for v in [wkb]]
     frame = pl.DataFrame(
         {
@@ -277,7 +177,13 @@ def test_save_places_round_trips_real_wkb(tmp_path) -> None:
         },
         schema=PLACES_SCHEMA,
     )
-    out = save_places(frame, tmp_path / "rel", kinds=["golf_course"])
+    out = save_places(
+        frame,
+        tmp_path / "rel",
+        kinds=["golf_course"],
+        source="test-source",
+        source_url="https://example.invalid/test",
+    )
     restored = pl.read_parquet(out / "places.parquet")
     assert restored.height == 1
     assert restored["geometry_wkb"][0] == bytes(wkb)
@@ -453,5 +359,11 @@ def test_failed_write_leaves_no_partial_release(tmp_path) -> None:
         pl.Series("geometry_wkb", [bytearray(b"\x00")], dtype=pl.Object)
     )
     with pytest.raises((pl.exceptions.PolarsError, TypeError)):
-        save_places(bad, target, kinds=["golf_course"])
+        save_places(
+            bad,
+            target,
+            kinds=["golf_course"],
+            source="test-source",
+            source_url="https://example.invalid/test",
+        )
     assert not target.exists(), "partial release directory left behind"

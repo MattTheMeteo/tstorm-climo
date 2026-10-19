@@ -11,7 +11,7 @@ import httpx
 import polars as pl
 
 from tstorm_climo.artifacts import build_hourly_observation_artifact
-from tstorm_climo.catalog import KIND_MATCHES, fetch_places, save_places
+from tstorm_climo.catalog import KIND_MATCHES
 from tstorm_climo.catalog_storage import (
     DEFAULT_CATALOG_PREFIX,
     publish_catalog_to_s3,
@@ -151,7 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     catalog = subparsers.add_parser(
         "build-catalog",
-        help="Pull a place catalog from the LayerCake OSM POI parquet.",
+        help="Pull a place catalog from a Geofabrik raw .osm.pbf extract.",
     )
     catalog.add_argument(
         "--kind",
@@ -180,16 +180,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     catalog.add_argument(
         "--source",
-        choices=("layercake", "geofabrik"),
-        default="layercake",
-        help="Catalog source (default: layercake).",
+        choices=("geofabrik",),
+        default="geofabrik",
+        help=(
+            "Catalog source. Only 'geofabrik' remains; the LayerCake POI "
+            "parquet path has been removed."
+        ),
     )
     catalog.add_argument(
         "--region",
-        help=(
-            "Geofabrik region slug, e.g. north-america/us/massachusetts. "
-            "Required with --source geofabrik."
-        ),
+        required=True,
+        help="Geofabrik region slug, e.g. north-america/us/massachusetts.",
     )
     catalog.add_argument(
         "--s3-bucket",
@@ -283,36 +284,12 @@ def _build_catalog(args: argparse.Namespace) -> int:
     """Create a local catalog release and optionally publish it to S3."""
     bbox = tuple(args.bbox) if args.bbox else None
     try:
-        if args.source == "geofabrik":
-            if not args.region:
-                print(
-                    "--region is required with --source geofabrik.",
-                    file=sys.stderr,
-                )
-                return 2
-            release = build_geofabrik_catalog(
-                args.region,
-                args.kind,
-                args.output,
-                bbox=bbox,
-            )
-        else:
-            if args.region:
-                print(
-                    "--region can only be used with --source geofabrik.",
-                    file=sys.stderr,
-                )
-                return 2
-            places = fetch_places(args.kind, bbox=bbox)
-            if places.height == 0:
-                print("No places matched.", file=sys.stderr)
-                return 1
-            release = save_places(
-                places,
-                args.output,
-                kinds=args.kind,
-                extra_metadata={"bbox": list(bbox) if bbox else None},
-            )
+        release = build_geofabrik_catalog(
+            args.region,
+            args.kind,
+            args.output,
+            bbox=bbox,
+        )
 
         manifest = json.loads((release / "manifest.json").read_text())
         counts = manifest["catalog"]["counts"]
@@ -343,14 +320,10 @@ def _build_catalog(args: argparse.Namespace) -> int:
 
 
 def _catalog_s3_prefix(args: argparse.Namespace) -> str:
-    """Namespace latest pointers by source and region/query."""
+    """Namespace latest pointers by source region/query."""
     base = args.s3_prefix.strip("/")
     extent = _bbox_s3_scope(args.bbox)
-    if args.source == "geofabrik":
-        scope = f"geofabrik/{args.region.strip('/')}/{extent}"
-    else:
-        kinds = "+".join(sorted(args.kind))
-        scope = f"layercake/{kinds}/{extent}"
+    scope = f"geofabrik/{args.region.strip('/')}/{extent}"
     return f"{base}/{scope}" if base else scope
 
 

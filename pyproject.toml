@@ -12,6 +12,7 @@ dependencies = [
     "duckdb>=1.5.6",
     "dynamical-catalog>=0.8.0",
     "httpx>=0.28.1",
+    "numpy>=2.0",
     "osmium>=4.3.1",
     "polars>=1.0",
     "pydantic>=2.0",

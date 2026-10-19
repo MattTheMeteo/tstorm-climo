@@ -66,19 +66,20 @@ already caused one wrong threshold in this project. So:
 | `tstorm_climo/climatology.py` | `summarize_grid(precipitation)` | Per hourly analysis step, counts CONUS-wide grid points above a threshold (default 0.05 mm/h). Takes an **already-loaded** dataset — I/O lives in `hrrr.load_precipitation`. Coarse-grained (whole dataset, no spatial subset); a global sanity check, not a per-place result. |
 | `tstorm_climo/extract.py` | `extract_series(places, start, end, grid=, opener=)`, `sampling_cells(grid, places)`, `sampling_frame(places, sampling)` | Long-format per-place hourly series (`place_key, time, precipitation_mm_per_hour, valid, y_index, x_index, grid_lat, grid_lon, snap_distance_km, tz_name, sampling, n_cells, sampling_key`). `place_key` is independent of input order; summaries join by key. One contiguous block read, then gather in memory. Slices **before** converting units. Sorted by input place order, then time; the time column resets per place and is not globally sorted. `y_index`/`x_index`/`grid_lat`/`grid_lon`/`snap_distance_km` describe the place's **anchor** (nearest node to its representative point) and are not the nodes that were averaged; `n_cells` and `sampling_key` say what was, and `sampling_frame` holds the full node list. `sampling_cells` is a pure function of grid + places with no archive read, so callers can get the footprint without re-extracting. |
 | `tstorm_climo/artifacts.py` | `build_hourly_observation_artifact(places, start, end, output_dir)` | Writes an immutable output directory containing `observations.parquet`, the exact `places.parquet` catalog used, `sampling.parquet` (one row per place/node actually averaged), and `manifest.json`. Current variable is `rain_rate` in mm/h; no threshold is applied. Includes a canonical place-catalog hash and valid/invalid row counts. Existing output directories are not overwritten. Note the artifact renames `time`→`time_utc` and `precipitation_mm_per_hour`→`value` for multi-variable storage, so `summarize.place_summary` needs those mapped back before it can read `observations.parquet` directly. |
-| `tstorm_climo/catalog.py` | `fetch_places(kinds, bbox=)`, `save_places(...)` | Pulls LayerCake's POI GeoParquet with DuckDB and writes a normalized catalog release with WKB geometry and provenance. |
+| `tstorm_climo/catalog.py` | `match_tags(tags, kinds)`, `match_source(kind)`, `deduplicate_places(...)`, `exclude_practice_facilities(...)`, `save_places(...)` | Shared catalog layer: kind-to-tag matching, duplicate and practice-facility cleanup, the normalized WKB schema, and the immutable release directory. Source-specific retrieval lives in `geofabrik.py` and `osm.py`. |
 | `tstorm_climo/geofabrik.py` | `build_geofabrik_catalog(region, kinds, output_dir, bbox=)` | Downloads one regional raw `.osm.pbf` to temporary storage, filters nodes and assembled OSM areas by the shared tag rules, computes representative points, and saves a catalog release. The source PBF is discarded after the build. |
 | `tstorm_climo/catalog_storage.py` | `publish_catalog_to_s3(catalog_dir, bucket, prefix=)` | Optional boto3-backed publishing: uploads release files under unique keys, then updates a source/region-scoped `latest.json` pointer. Install with `uv sync --extra catalog-s3`. |
 | `tstorm_climo/summarize.py` | `place_summary`, `by_local_month`, `by_local_hour`, `scorecard`, `split_half_reliability` | Per-place climatology in local time. Default threshold 0.05 mm/h, shared with `summarize_grid`. No unit conversion — input is already mm/h. |
 | `tstorm_climo/provenance.py` | `build_metadata`, `write_metadata`, `format_caveats` | JSON sidecar recording archive, date range, threshold, reliability and the CC-BY / ODbL attribution. Makes a published number reproducible and keeps licence obligations in one place. |
-| `tstorm_climo/cli.py` | `build-catalog --source/--region/--kind/--bbox/--output/--s3-bucket`, `build-observations --places/--start/--end/--output`, `rain-report ...`, `summarize ...`, `fetch-places ...` | argparse subcommands. `build-catalog` supports LayerCake (default) or Geofabrik; S3 publishing is optional. `build-observations` creates the reusable hourly rain artifact. `rain-report` writes a **derived summary**, not hourly observations. |
+| `tstorm_climo/grid.py` | `Grid.from_dataset(ds)`, `Grid.locate`, `locate_places`, `cover_cells`, `bounds()`, `spacing_km`, `max_snap_km`; `GridNode`/`GridCell`/`FootprintCell` | Maps a place onto HRRR nodes using the archive's own 2-D lat/lon arrays, so no `pyproj`. `locate*` snap to the nearest node; `cover_cells` returns every node inside an OSM footprint via DuckDB `spatial`. `max_snap_factor` and `batch_nodes` are constructor keywords. |
+| `tstorm_climo/cli.py` | `build-catalog --region/--kind/--bbox/--output/--s3-bucket`, `build-observations --places/--start/--end/--output`, `rain-report ...`, `summarize ...`, `fetch-places ...` | argparse subcommands. `build-catalog` pulls a Geofabrik region (`--region` required); S3 publishing is optional. `build-observations` creates the reusable hourly rain artifact. `rain-report` writes a **derived summary**, not hourly observations. |
 
 Committed data:
 - `places_north_shore.csv` — 50 golf courses + 60 named beaches for the
   North Shore bbox (42.35–42.95, −71.20−−70.50), generated by
   `fetch-places --named-only`.
 
-### Place-catalog sources: LayerCake, Geofabrik, and Overpass
+### Place-catalog sources: Geofabrik and Overpass
 
 Overpass is built for ad-hoc queries against a shared service, not bulk
 extraction. It has slot allocation, rate limits, and a usage policy that
@@ -87,52 +88,51 @@ handles worst. Observed directly in this project: HTTP 400s and 504s,
 and silent undercounts (a known-good bbox returned 1 course instead of
 ~5).
 
-Two bulk-capable paths are now implemented:
+**Geofabrik raw `.osm.pbf` is now the only bulk-capable path.**
+`build-catalog --region ...` downloads a regional extract, filters it
+locally with pyosmium, constructs way and multipolygon area geometry, and
+stores only the matching catalog. The PBF is temporary and is not kept in
+the release or uploaded to S3. Nodes and assembled areas are included; open
+ways are intentionally excluded so ski-piste lines are not mistaken for ski
+resorts. Geofabrik's current downloads include a US extract of about
+**11.4 GB** and a Massachusetts extract of about **296 MB**
+([US](https://download.geofabrik.de/north-america/us.html),
+[Massachusetts](https://download.geofabrik.de/north-america/us/massachusetts.html),
+checked 2026-10-12). The raw PBF includes the region's OSM data; the free
+prebuilt Shapefile/GeoPackage products are curated subsets and are not used
+for this path.
 
-- **LayerCake POI GeoParquet (OSM US)** — the default for
-  `build-catalog`. One file,
-  `https://data.openstreetmap.us/layercake/pois.parquet`, 62.3 M features,
-  4.7 GB, refreshed daily (last-modified 2026-10-11), ODbL.
-  - **DuckDB reads it remotely over HTTP range requests**, fetching only
-    the needed row groups. The 4.7 GB file is never downloaded whole.
-    Verified: all **50/50** committed North Shore golf courses are found
-    by a single-column remote query in ~30 s.
-  - Output is **already parquet**, so no `osmium` parse step is needed.
-  - Carries WKB geometry (POINT/POLYGON/MULTIPOLYGON).
-  - 4.7 GB file, 507 row groups, worldwide scope (filterable, not US-only).
-- **Geofabrik raw `.osm.pbf`** — `build-catalog --source geofabrik` downloads
-  a regional extract, filters it locally with pyosmium, constructs way and
-  multipolygon area geometry, and stores only the matching catalog. The PBF
-  is temporary and is not kept in the release or uploaded to S3. Nodes and
-  assembled areas are included; open ways are intentionally excluded so
-  ski-piste lines are not mistaken for ski resorts. Geofabrik's
-  current downloads include a US extract of about **11.4 GB** and a
-  Massachusetts extract of about **296 MB** ([US](https://download.geofabrik.de/north-america/us.html),
-  [Massachusetts](https://download.geofabrik.de/north-america/us/massachusetts.html),
-  checked 2026-10-12). The raw PBF includes the region's OSM data; the free
-  prebuilt Shapefile/GeoPackage products are curated subsets and are not used
-  for this path.
+`build-catalog` writes a local immutable release; with `--s3-bucket`, it
+uploads the Parquet and manifest under unique keys and updates a
+region-scoped `latest.json` only after both uploads finish. The PBF itself
+is not uploaded. It is a manual CLI workflow today; scheduling a refresh is
+future deployment work.
 
-Both sources normalize to the same `place_key`/WKB catalog schema. LayerCake
-is faster to query remotely; Geofabrik gives the project direct control over
-tag matching and geometry extraction. Compare their results before changing
-the default source. `build-catalog` writes a local immutable release; with
-`--s3-bucket`, it uploads the Parquet and manifest under unique keys and
-updates a source/region-scoped `latest.json` only after both uploads finish.
-The Geofabrik PBF itself is not uploaded. It is a manual CLI workflow today;
-scheduling a refresh is future deployment work.
+#### LayerCake: removed
 
-Trade-off accepted: each remote query costs ~20–30 s (cold scan). Fine
-for a weekly build; incompatible with an interactive UI — consistent with
-the plan's existing rule that the app never calls live data APIs.
+The **LayerCake POI GeoParquet** path
+(`https://data.openstreetmap.us/layercake/pois.parquet`, 62.3 M features,
+4.7 GB, refreshed daily, ODbL) used to be the default source for
+`build-catalog`. DuckDB read it remotely over HTTP range requests, so the
+4.7 GB file was never downloaded whole, and a single-column remote query
+found all **50/50** committed North Shore golf courses in ~30 s. That is a
+real advantage and the reason it was ever the default.
 
-### Beaches: LayerCake coverage is poor — Overpass is better (measured)
+It was removed because its beach coverage in this region is effectively
+zero (measured below, and 0 of 60 names in common with our Overpass CSV),
+while being the *default* meant `build-catalog --kind beach` silently
+produced a catalog of one beach. The measured golf-course performance is
+recorded here in case a future remote source should be evaluated against
+it; the corresponding code (`fetch_places`, `build_query`, and the DuckDB
+SQL token helpers that fed them) is deleted, along with the `--source
+layercake` CLI choice.
 
-`natural=beach` is the primary beach tag, and `leisure=beach_resort`
-exists in LayerCake (14,151 features worldwide, plus 1,051 that also
-carry `natural=beach`). Both are queried. **Neither closes the gap.**
 
-Same North Shore bbox (42.35, −71.20, 42.95, −70.50):
+This is what retired LayerCake. `natural=beach` is the primary beach tag
+and `leisure=beach_resort` a real but sparse secondary; LayerCake queried
+both and still came back nearly empty for this region.
+
+Same North Shore bbox (42.35, -71.20, 42.95, -70.50):
 
 | Source | Beaches |
 |---|---|
@@ -142,19 +142,14 @@ Same North Shore bbox (42.35, −71.20, 42.95, −70.50):
 | Names in common | **0** |
 
 LayerCake carries beaches elsewhere (2,770 `natural=beach` worldwide;
-present in a Cape Cod box), so this is **regional coverage, not a broken
-query** — verified by pulling the same box twice.
+present in a Cape Cod box), so this was **regional coverage, not a broken
+query** - verified by pulling the same box twice. LayerCake is now removed;
+see "LayerCake: removed" above.
 
-**Consequence:** do not treat LayerCake as a complete beach catalog. The
-Geofabrik PBF path can inspect raw regional OSM tags and geometry, but its
-beach coverage has not yet been benchmarked against the known 60 Overpass
-places. Keep the existing beach catalog until that comparison is done; do
-not silently replace it with a source that returns one beach.
-
-Diagnostic pitfall: `WHERE a OR b AND bbox` binds as `a OR (b AND bbox)`
-in SQL, so the bbox silently constrains only the second arm and returns
-wildly inflated counts (2,771 instead of 1). Always parenthesise mixed
-`OR`/`AND` predicates.
+**Still open:** the Geofabrik PBF path can inspect raw regional OSM tags
+and geometry, but its beach coverage has never been benchmarked against
+the known 60 Overpass places. Keep the existing beach catalog until that
+comparison is done.
 
 ### Ski areas: tagging is fragmented, but curatable (measured)
 
@@ -207,10 +202,17 @@ checked-in **curation overlay** for corrections the tags cannot express
 - Scratch analysis scripts under `/tmp` cost several debugging rounds;
   if this becomes recurring work it belongs in the repo with tests.
 
-Tooling: `uv` + Python 3.14, `pytest`, `ruff` (E/F/I/UP/B/SIM).
-Dependencies: `dynamical-catalog`, `xarray`, `polars`, `pydantic`,
-`tzfpy`, `httpx`. Deliberately NOT used: GRIB2/cfgrib, runtime OSM
-fetches in the analysis path.
+Tooling: `uv` + Python 3.14, `pytest`, `ruff` (E/F/I/UP/B/SIM), `ty`.
+Declared dependencies: `dynamical-catalog`, `xarray`, `polars`, `pydantic`,
+`numpy`, `duckdb`, `httpx`, `tzfpy`, `osmium`, `boto3`. Deliberately NOT
+used: GRIB2/cfgrib, runtime OSM fetches in the analysis path.
+
+- `numpy` is imported directly by `grid`, `extract`, `summarize`, `places`,
+  and `climatology`, so it belongs in `pyproject.toml` even though every
+  current install resolves it transitively.
+- `duckdb` is needed twice: `grid.cover_cells` uses its `spatial` extension
+  for point-in-polygon, and `geofabrik` uses it for spatial joins.
+- `osmium` is Geofabrik-only; `boto3` is the optional `catalog-s3` extra.
 
 Testing strategy: unit tests run on synthetic xarray datasets via an
 injected `opener`; no network in the fast test suite.
@@ -547,7 +549,7 @@ injected `opener`; no network in the fast test suite.
     builder stores WKB in its own Parquet release. The app must load a
     catalog release consistent with the artifact's place keys/hash before
     showing outlines or place metadata.
-    - **Place catalog refresh is an offline build step.** Use LayerCake for
+    - **Place catalog refresh is an offline build step.** Use Geofabrik for
       efficient remote POI queries, Geofabrik PBF for direct regional OSM
       filtering, and Overpass only for small ad-hoc or supplemental lookups.
       Never call these sources in response to app interactions. For broad

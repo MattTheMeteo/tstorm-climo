@@ -58,17 +58,16 @@ the filtered catalog is written:
 
 ```sh
 uv run tstorm-climo build-catalog \
-  --source geofabrik \
   --region north-america/us/massachusetts \
   --kind golf_course --kind beach \
   --output artifacts/catalogs/massachusetts
 ```
 
-LayerCake remains available with `--source layercake` (the default). To
-publish a finished release to S3, install the optional dependency with
+Geofabrik is the only catalog source; `--region` is required. To publish a
+finished release to S3, install the optional dependency with
 `uv sync --extra catalog-s3` and add `--s3-bucket BUCKET`. Catalog releases
-are uploaded under immutable keys; a source/region-specific `latest.json`
-pointer is updated only after both the Parquet and manifest are uploaded.
+are uploaded under immutable keys; a region-specific `latest.json` pointer is
+updated only after both the Parquet and manifest are uploaded.
 
 Build a reusable hourly rain artifact for later interactive queries:
 
@@ -124,16 +123,16 @@ uv run ty check            # type check
 
 ## Status
 
-Implemented: HRRR data access, LayerCake and Geofabrik place-catalog builds,
-OSM place fetching, grid mapping, footprint and point sampling, per-place
-rain extraction and summaries, the `rain-report` CLI, and reusable hourly
-rain Parquet artifacts. Geofabrik catalogs can optionally be published to
-S3. Snow analysis and a hosted marimo app are not implemented. The planned
-app will calculate in response to user choices from prepared artifacts, not
+Implemented: HRRR data access, Geofabrik place-catalog builds, OSM place
+fetching, grid mapping, footprint and point sampling, per-place rain
+extraction and summaries, the `rain-report` CLI, and reusable hourly rain
+Parquet artifacts. Geofabrik catalogs can optionally be published to S3.
+Snow analysis and a hosted marimo app are not implemented. The planned app
+will calculate in response to user choices from prepared artifacts, not
 fetch HRRR or Overpass data on each interaction.
 
-Pipeline: places (OSM via Overpass as CSV, or a Geofabrik/LayerCake catalog
-with geometry) → `Grid` maps each place to its HRRR nodes — every node its
+Pipeline: places (OSM via Overpass as CSV, or a Geofabrik catalog with
+geometry) → `Grid` maps each place to its HRRR nodes — every node its
 polygon footprint covers, or the single nearest node when it has no
 footprint → `extract_series` reads one contiguous grid block and returns an
 hourly series keyed by stable OSM `place_key` → `summarize.place_summary` /

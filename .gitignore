@@ -9,6 +9,15 @@ wheels/
 # Virtual environments
 .venv
 
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+
+# Coverage output
+.coverage
+htmlcov/
+coverage.xml
+
 # Generated analysis artifacts
 artifacts/
 *.parquet

@@ -108,12 +108,7 @@ def test_ski_area_needs_both_tagging_paths() -> None:
     """Neither column alone is sufficient (see PLAN.md)."""
     con = connect()
     clause = kind_condition("ski_area")
-    names = {
-        r[0]
-        for r in con.sql(
-            f"SELECT name FROM pois WHERE {clause}"
-        ).fetchall()
-    }
+    names = {r[0] for r in con.sql(f"SELECT name FROM pois WHERE {clause}").fetchall()}
     # sport-only tagging
     assert "Alpine Valley" in names
     # semicolon list
@@ -125,12 +120,7 @@ def test_ski_area_needs_both_tagging_paths() -> None:
 def test_golf_course_matches_leisure_only() -> None:
     con = connect()
     clause = kind_condition("golf_course")
-    names = {
-        r[0]
-        for r in con.sql(
-            f"SELECT name FROM pois WHERE {clause}"
-        ).fetchall()
-    }
+    names = {r[0] for r in con.sql(f"SELECT name FROM pois WHERE {clause}").fetchall()}
     assert names == {"Test Golf", "Point Golf"}
 
 
@@ -152,9 +142,10 @@ def test_match_source_lists_columns() -> None:
 
 
 def test_raw_tag_match_uses_exact_semicolon_tokens() -> None:
-    assert match_tags(
-        {"sport": "skiing;ice_skating"}, ["ski_area"]
-    ) == ("ski_area", "sport")
+    assert match_tags({"sport": "skiing;ice_skating"}, ["ski_area"]) == (
+        "ski_area",
+        "sport",
+    )
     assert match_tags({"sport": "skittles"}, ["ski_area"]) is None
 
 
@@ -200,7 +191,6 @@ def test_fetch_places_returns_schema(tmp_path) -> None:
     """End-to-end over a local file, with no network."""
     import polars as pl
 
-
     frame = pl.DataFrame(
         {
             "place_key": ["osm:way:1", "osm:way:4"],
@@ -234,7 +224,6 @@ def test_fetch_places_returns_schema(tmp_path) -> None:
 def test_save_places_refuses_to_overwrite(tmp_path) -> None:
     import polars as pl
 
-
     frame = pl.DataFrame(
         {
             "place_key": ["osm:way:1"],
@@ -254,6 +243,7 @@ def test_save_places_refuses_to_overwrite(tmp_path) -> None:
     with pytest.raises(FileExistsError):
         save_places(frame, tmp_path / "catalog", kinds=["golf_course"])
 
+
 def test_save_places_round_trips_real_wkb(tmp_path) -> None:
     """Real geometry must survive the parquet write.
 
@@ -263,7 +253,6 @@ def test_save_places_round_trips_real_wkb(tmp_path) -> None:
     """
     import duckdb
     import polars as pl
-
 
     con = duckdb.connect()
     con.execute("INSTALL spatial; LOAD spatial;")
@@ -354,36 +343,72 @@ def test_deduplicate_places_collapses_duplicate_representations() -> None:
     frame = _frame(
         [
             # One physical club mapped as a relation plus two ways.
-            _place("osm:relation:1", "relation", "1", "Vesper Country Club",
-                   lat=42.55, lon=-71.35, geometry_type="MULTIPOLYGON"),
-            _place("osm:way:2", "way", "2", "Vesper Country Club",
-                   lat=42.5501, lon=-71.3501, geometry_type="MULTIPOLYGON"),
-            _place("osm:way:3", "way", "3", "Vesper Country Club",
-                   lat=42.5502, lon=-71.3502, geometry_type="MULTIPOLYGON"),
+            _place(
+                "osm:relation:1",
+                "relation",
+                "1",
+                "Vesper Country Club",
+                lat=42.55,
+                lon=-71.35,
+                geometry_type="MULTIPOLYGON",
+            ),
+            _place(
+                "osm:way:2",
+                "way",
+                "2",
+                "Vesper Country Club",
+                lat=42.5501,
+                lon=-71.3501,
+                geometry_type="MULTIPOLYGON",
+            ),
+            _place(
+                "osm:way:3",
+                "way",
+                "3",
+                "Vesper Country Club",
+                lat=42.5502,
+                lon=-71.3502,
+                geometry_type="MULTIPOLYGON",
+            ),
             # Two distinct same-named courses, far apart.
-            _place("osm:way:4", "way", "4", "Riverside Golf Course",
-                   lat=42.0, lon=-71.0),
-            _place("osm:way:5", "way", "5", "Riverside Golf Course",
-                   lat=43.0, lon=-73.0),
+            _place(
+                "osm:way:4", "way", "4", "Riverside Golf Course", lat=42.0, lon=-71.0
+            ),
+            _place(
+                "osm:way:5", "way", "5", "Riverside Golf Course", lat=43.0, lon=-73.0
+            ),
         ]
     )
     out = deduplicate_places(frame)
     assert out.height == 3
     assert out.filter(pl.col("name") == "Vesper Country Club").height == 1
-    assert (
-        out.filter(pl.col("name") == "Vesper Country Club")["osm_type"].to_list()
-        == ["relation"]
-    )
+    assert out.filter(pl.col("name") == "Vesper Country Club")[
+        "osm_type"
+    ].to_list() == ["relation"]
     assert out.filter(pl.col("name") == "Riverside Golf Course").height == 2
 
 
 def test_deduplicate_places_prefers_area_over_point() -> None:
     frame = _frame(
         [
-            _place("osm:node:1", "node", "1", "Point Golf",
-                   lat=42.0, lon=-71.0, geometry_type="POINT"),
-            _place("osm:way:2", "way", "2", "Point Golf",
-                   lat=42.0001, lon=-71.0001, geometry_type="POLYGON"),
+            _place(
+                "osm:node:1",
+                "node",
+                "1",
+                "Point Golf",
+                lat=42.0,
+                lon=-71.0,
+                geometry_type="POINT",
+            ),
+            _place(
+                "osm:way:2",
+                "way",
+                "2",
+                "Point Golf",
+                lat=42.0001,
+                lon=-71.0001,
+                geometry_type="POLYGON",
+            ),
         ]
     )
     out = deduplicate_places(frame)
@@ -405,7 +430,6 @@ def test_deduplicate_places_keeps_differently_named_neighbors() -> None:
 def test_failed_write_leaves_no_partial_release(tmp_path) -> None:
     """A crash mid-write must not leave a half-populated directory."""
     import polars as pl
-
 
     target = tmp_path / "rel"
     good = pl.DataFrame(

@@ -32,6 +32,7 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
     "ruff>=0.16.7",
     "ty>=0.0.86",
 ]
@@ -58,3 +59,14 @@ python-version = "3.12"
 
 [tool.ty.src]
 include = ["src", "tests"]
+
+[tool.coverage.run]
+source = ["src/tstorm_climo"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    'if __name__ == "__main__":',
+    "raise NotImplementedError",
+]

@@ -17,7 +17,7 @@ from tstorm_climo.geofabrik import (
     geofabrik_url,
 )
 
-OSM_XML = b'''<?xml version="1.0" encoding="UTF-8"?>
+OSM_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 <osm version="0.6" generator="test">
   <node id="1" lat="42.0" lon="-71.0" />
   <node id="2" lat="42.0" lon="-70.9" />
@@ -30,7 +30,7 @@ OSM_XML = b'''<?xml version="1.0" encoding="UTF-8"?>
     <nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/>
     <tag k="leisure" v="golf_course"/><tag k="name" v="Test Golf"/>
   </way>
-</osm>'''
+</osm>"""
 
 
 def make_pbf(path) -> bytes:
@@ -67,8 +67,7 @@ def make_pbf(path) -> bytes:
 
 def test_geofabrik_url_validates_region_slug() -> None:
     assert geofabrik_url("north-america/us/massachusetts") == (
-        "https://download.geofabrik.de/"
-        "north-america/us/massachusetts-latest.osm.pbf"
+        "https://download.geofabrik.de/north-america/us/massachusetts-latest.osm.pbf"
     )
     with pytest.raises(ValueError, match="invalid Geofabrik region"):
         geofabrik_url("../../private")

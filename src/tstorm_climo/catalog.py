@@ -117,9 +117,11 @@ def kind_condition(kind: str) -> str:
     matches = KIND_MATCHES.get(kind)
     if not matches:
         raise KeyError(f"unknown place kind: {kind}")
-    return "(" + " OR ".join(
-        token_clause(column, tokens) for column, tokens in matches
-    ) + ")"
+    return (
+        "("
+        + " OR ".join(token_clause(column, tokens) for column, tokens in matches)
+        + ")"
+    )
 
 
 def match_source(kind: str) -> str:
@@ -127,9 +129,7 @@ def match_source(kind: str) -> str:
     return "+".join(column for column, _ in KIND_MATCHES[kind])
 
 
-def match_tags(
-    tags: Mapping[str, str], kinds: Sequence[str]
-) -> tuple[str, str] | None:
+def match_tags(tags: Mapping[str, str], kinds: Sequence[str]) -> tuple[str, str] | None:
     """Return the first requested kind matched by raw OSM tags.
 
     Matching follows :data:`KIND_MATCHES` and treats semicolon-separated tag
@@ -143,8 +143,7 @@ def match_tags(
         matched_columns = []
         for column, tokens in matches:
             values = {
-                value.strip().casefold()
-                for value in tags.get(column, "").split(";")
+                value.strip().casefold() for value in tags.get(column, "").split(";")
             }
             if values.intersection(token.casefold() for token in tokens):
                 matched_columns.append(column)
@@ -198,9 +197,7 @@ def exclude_practice_facilities(places: pl.DataFrame) -> pl.DataFrame:
     return places.filter(~is_facility)
 
 
-def deduplicate_places(
-    places: pl.DataFrame, *, tol_km: float = 1.0
-) -> pl.DataFrame:
+def deduplicate_places(places: pl.DataFrame, *, tol_km: float = 1.0) -> pl.DataFrame:
     """Collapse near-duplicate representations of the same place.
 
     OSM often maps one feature as a node, a way and a relation under the
@@ -234,14 +231,9 @@ def deduplicate_places(
 
 def _representation_preference() -> pl.Expr:
     """Sort key preferring area geometry, then relation > way > node."""
-    return (
-        pl.col("geometry_type").ne("POINT").cast(pl.Int64) * 100
-        + pl.when(pl.col("osm_type") == "relation")
-        .then(2)
-        .when(pl.col("osm_type") == "way")
-        .then(1)
-        .otherwise(0)
-    )
+    return pl.col("geometry_type").ne("POINT").cast(pl.Int64) * 100 + pl.when(
+        pl.col("osm_type") == "relation"
+    ).then(2).when(pl.col("osm_type") == "way").then(1).otherwise(0)
 
 
 def build_query(
@@ -274,19 +266,15 @@ def build_query(
     predicates = " OR ".join(kind_condition(kind) for kind in kinds)
     # CASE mirrors the WHERE so each row records why it matched; first
     # matching kind wins, in the order the caller requested.
-    cases = " ".join(
-        f"WHEN {kind_condition(kind)} THEN '{kind}'" for kind in kinds
-    )
+    cases = " ".join(f"WHEN {kind_condition(kind)} THEN '{kind}'" for kind in kinds)
     source_cases = " ".join(
-        f"WHEN {kind_condition(kind)} THEN '{match_source(kind)}'"
-        for kind in kinds
+        f"WHEN {kind_condition(kind)} THEN '{match_source(kind)}'" for kind in kinds
     )
     bbox_clause = ""
     if bbox is not None:
         south, west, north, east = bbox
         bbox_clause = (
-            f" AND lat BETWEEN {south} AND {north}"
-            f" AND lon BETWEEN {west} AND {east}"
+            f" AND lat BETWEEN {south} AND {north} AND lon BETWEEN {west} AND {east}"
         )
     source = f"'{source_url}'"
     return f"""
@@ -349,8 +337,7 @@ def fetch_places(
     # cannot serialise; convert those to plain bytes first.
     columns = connection.sql(query).fetchnumpy()
     columns["geometry_wkb"] = [
-        bytes(value) if value is not None else None
-        for value in columns["geometry_wkb"]
+        bytes(value) if value is not None else None for value in columns["geometry_wkb"]
     ]
     frame = pl.DataFrame(
         {
@@ -395,9 +382,7 @@ def save_places(
         raise FileExistsError(f"catalog output already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    counts = {
-        kind: places.filter(pl.col("kind") == kind).height for kind in kinds
-    }
+    counts = {kind: places.filter(pl.col("kind") == kind).height for kind in kinds}
     metadata = build_metadata(
         start="",
         end="",
@@ -445,9 +430,7 @@ def save_places(
             encoding="utf-8",
         )
         if destination.exists():
-            raise FileExistsError(
-                f"catalog output already exists: {destination}"
-            )
+            raise FileExistsError(f"catalog output already exists: {destination}")
         staging.rename(destination)
     return destination
 

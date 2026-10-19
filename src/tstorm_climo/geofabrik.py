@@ -200,16 +200,12 @@ def build_geofabrik_catalog(
 
     with TemporaryDirectory(prefix="tstorm-climo-geofabrik-") as temporary:
         pbf_path = Path(temporary) / "extract.osm.pbf"
-        source_metadata = download_geofabrik_pbf(
-            region, pbf_path, client=client
-        )
+        source_metadata = download_geofabrik_pbf(region, pbf_path, client=client)
         places = extract_geofabrik_places(pbf_path, kinds, bbox=bbox)
         places = exclude_practice_facilities(places)
         places = deduplicate_places(places)
         if places.height == 0:
-            raise ValueError(
-                f"no matching places found in Geofabrik region {region!r}"
-            )
+            raise ValueError(f"no matching places found in Geofabrik region {region!r}")
         save_places(
             places,
             destination,

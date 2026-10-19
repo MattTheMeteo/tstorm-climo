@@ -49,12 +49,18 @@ def test_build_catalog_parses_geofabrik_and_s3_options() -> None:
     args = build_parser().parse_args(
         [
             "build-catalog",
-            "--source", "geofabrik",
-            "--region", "north-america/us/massachusetts",
-            "--kind", "golf_course",
-            "--kind", "beach",
-            "--output", "catalogs/massachusetts",
-            "--s3-bucket", "weather-data",
+            "--source",
+            "geofabrik",
+            "--region",
+            "north-america/us/massachusetts",
+            "--kind",
+            "golf_course",
+            "--kind",
+            "beach",
+            "--output",
+            "catalogs/massachusetts",
+            "--s3-bucket",
+            "weather-data",
         ]
     )
     assert args.source == "geofabrik"
@@ -70,26 +76,35 @@ def test_catalog_s3_prefix_is_unique_to_source_selection() -> None:
     geofabrik = parser.parse_args(
         [
             "build-catalog",
-            "--source", "geofabrik",
-            "--region", "north-america/us/massachusetts",
-            "--kind", "beach",
-            "--output", "catalog",
+            "--source",
+            "geofabrik",
+            "--region",
+            "north-america/us/massachusetts",
+            "--kind",
+            "beach",
+            "--output",
+            "catalog",
         ]
     )
     layercake = parser.parse_args(
         [
             "build-catalog",
-            "--kind", "beach",
-            "--bbox", "42.35", "-71.20", "42.95", "-70.50",
-            "--output", "catalog",
+            "--kind",
+            "beach",
+            "--bbox",
+            "42.35",
+            "-71.20",
+            "42.95",
+            "-70.50",
+            "--output",
+            "catalog",
         ]
     )
     assert _catalog_s3_prefix(geofabrik) == (
         "tstorm-climo/catalogs/geofabrik/north-america/us/massachusetts/full"
     )
     assert _catalog_s3_prefix(layercake) == (
-        "tstorm-climo/catalogs/layercake/beach/"
-        "bbox-42p3500-m71p2000-42p9500-m70p5000"
+        "tstorm-climo/catalogs/layercake/beach/bbox-42p3500-m71p2000-42p9500-m70p5000"
     )
 
 
@@ -124,16 +139,24 @@ def test_build_catalog_publishes_only_after_local_release(
         }
 
     monkeypatch.setattr(cli_module, "publish_catalog_to_s3", publish)
-    assert main(
-        [
-            "build-catalog",
-            "--source", "geofabrik",
-            "--region", "north-america/us/massachusetts",
-            "--kind", "golf_course",
-            "--output", str(release),
-            "--s3-bucket", "weather-data",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "build-catalog",
+                "--source",
+                "geofabrik",
+                "--region",
+                "north-america/us/massachusetts",
+                "--kind",
+                "golf_course",
+                "--output",
+                str(release),
+                "--s3-bucket",
+                "weather-data",
+            ]
+        )
+        == 0
+    )
     assert calls == [
         (
             release,

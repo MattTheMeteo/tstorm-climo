@@ -48,10 +48,7 @@ def publish_catalog_to_s3(
     published_at = datetime.now(UTC)
     places_sha256 = _sha256_file(places_path)
     manifest_sha256 = _sha256_file(manifest_path)
-    release_id = (
-        f"{published_at.strftime('%Y%m%dT%H%M%S.%fZ')}-"
-        f"{places_sha256[:12]}"
-    )
+    release_id = f"{published_at.strftime('%Y%m%dT%H%M%S.%fZ')}-{places_sha256[:12]}"
     release_prefix = (
         f"{prefix}/releases/{release_id}" if prefix else f"releases/{release_id}"
     )

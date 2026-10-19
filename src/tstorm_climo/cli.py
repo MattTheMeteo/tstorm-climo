@@ -24,7 +24,6 @@ from tstorm_climo.osm import KIND_TAGS, build_query, run_query
 from tstorm_climo.places import (
     deduplicate,
     from_overpass,
-    load_csv,
     load_places,
     save_csv,
 )
@@ -102,7 +101,10 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument(
         "--places",
         required=True,
-        help="Places CSV, as written by fetch-places.",
+        help=(
+            "Places CSV (as written by fetch-places) or a catalog "
+            "places.parquet with footprint geometry."
+        ),
     )
     report.add_argument(
         "--start",
@@ -390,7 +392,10 @@ def _build_observations(args: argparse.Namespace) -> int:
 
 def _rain_report(args: argparse.Namespace) -> int:
     """Rank places by rain frequency and print the Chuck table."""
-    places = load_csv(args.places)
+    # Accepts a catalog places.parquet as well as a CSV, so a report can
+    # use footprint geometry and average over covered nodes rather than
+    # silently falling back to the nearest-node sample.
+    places = load_places(args.places)
     if args.kind:
         wanted = set(args.kind)
         places = [p for p in places if p.kind in wanted]

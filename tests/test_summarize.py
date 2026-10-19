@@ -183,6 +183,92 @@ def test_distinct_nodes_are_not_tied() -> None:
     assert out["cell_places"].to_list() == [1, 1]
 
 
+def with_sampling(
+    series: pl.DataFrame, keys: list[str], n_cells: list[int] | None = None
+) -> pl.DataFrame:
+    """Attach footprint sampling columns, one value per place.
+
+    The series is place-major, so each key repeats once per hour of its
+    place. A key naming more than one node reads as a footprint.
+    """
+    n_places = len(keys)
+    per_place, remainder = divmod(series.height, n_places)
+    assert remainder == 0, "series height must divide evenly among places"
+    cells = n_cells or [1] * n_places
+    flat_keys = [key for key in keys for _ in range(per_place)]
+    flat_cells = [n for n in cells for _ in range(per_place)]
+    sampling = ["footprint" if key.count(",") else "point" for key in flat_keys]
+    return series.with_columns(
+        pl.Series("sampling", sampling, dtype=pl.String),
+        pl.Series("n_cells", flat_cells, dtype=pl.Int64),
+        pl.Series("sampling_key", flat_keys, dtype=pl.String),
+    )
+
+
+def test_identical_sampling_sets_are_tied() -> None:
+    """Two places averaged over the same nodes cannot be ranked apart."""
+    series = with_sampling(
+        make_series([[1.0, 0.0], [1.0, 0.0]]),
+        ["2x3,2x4", "2x3,2x4"],
+        [2, 2],
+    )
+    out = place_summary(series, [place(0), place(1)])
+    assert out["tied"].to_list() == [True, True]
+    assert out["cell_places"].to_list() == [2, 2]
+
+
+def test_shared_anchor_with_different_footprints_is_not_tied() -> None:
+    """The behaviour that motivated sampling_key.
+
+    Both places report the same anchor node, so the old anchor-keyed
+    metric called them unrankable. But they average different node sets,
+    so their numbers are genuinely different and comparable.
+    """
+    series = with_sampling(
+        make_series([[1.0, 0.0], [1.0, 0.0]]),
+        ["2x3,2x4", "2x3,2x5"],
+        [2, 2],
+    ).with_columns(pl.lit(7).alias("y_index"))
+    out = place_summary(series, [place(0), place(1)])
+    assert out["tied"].to_list() == [False, False]
+    assert out["cell_places"].to_list() == [1, 1]
+    # The anchor really is shared, which is what used to drive the metric.
+    assert out["y_index"].to_list() == [7, 7]
+
+
+def test_partially_overlapping_footprints_are_not_tied() -> None:
+    """Sharing one node couples two places but does not erase the numbers."""
+    series = with_sampling(
+        make_series([[1.0, 0.0], [1.0, 0.0]]),
+        ["2x3,2x4", "2x4,2x5"],
+        [2, 2],
+    )
+    out = place_summary(series, [place(0), place(1)])
+    assert out["tied"].to_list() == [False, False]
+
+
+def test_point_sampling_key_reduces_to_the_anchor_node() -> None:
+    """Backwards compatibility: point places tie exactly as they used to."""
+    series = with_sampling(
+        make_series([[1.0, 0.0], [1.0, 0.0]]),
+        ["7x0", "7x0"],
+    )
+    out = place_summary(series, [place(0), place(1)])
+    assert out["tied"].to_list() == [True, True]
+    assert out["n_cells"].to_list() == [1, 1]
+
+
+def test_series_without_sampling_columns_falls_back_to_the_anchor() -> None:
+    """A v1 artifact stays readable and keeps its original tie semantics."""
+    series = make_series([[1.0, 0.0], [1.0, 0.0]]).with_columns(
+        pl.lit(7).alias("y_index")
+    )
+    assert "sampling_key" not in series.columns
+    out = place_summary(series, [place(0), place(1)])
+    assert out["tied"].to_list() == [True, True]
+    assert out["n_cells"].to_list() == [1, 1]
+
+
 def test_summary_joins_places_independently_of_input_order() -> None:
     series = make_series([[0.0, 0.0], [1.0, 1.0]])
     out = place_summary(series, [place(1), place(0)])

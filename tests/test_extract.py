@@ -12,11 +12,20 @@ import pytest
 import xarray as xr
 
 from tstorm_climo.extract import (
+    FOOTPRINT_SAMPLING,
+    N_CELLS_COLUMN,
+    POINT_SAMPLING,
     RATE_COLUMN,
+    SAMPLING_COLUMN,
+    SAMPLING_KEY_COLUMN,
     SCHEMA,
     TIME_COLUMN,
     VALID_COLUMN,
+    SamplingCell,
     extract_series,
+    sampling_cells,
+    sampling_frame,
+    sampling_key,
 )
 from tstorm_climo.grid import Grid, PlaceOffGridError
 from tstorm_climo.places import Place
@@ -373,9 +382,7 @@ def wkb(wkt: str) -> bytes:
     con = duckdb.connect()
     try:
         con.execute("INSTALL spatial; LOAD spatial;")
-        row = con.execute(
-            "SELECT ST_AsWKB(ST_GeomFromText(?))", [wkt]
-        ).fetchone()
+        row = con.execute("SELECT ST_AsWKB(ST_GeomFromText(?))", [wkt]).fetchone()
         assert row is not None
         return bytes(row[0])
     finally:
@@ -443,3 +450,105 @@ def test_footprint_sampling_falls_back_when_polygon_covers_no_node() -> None:
     assert out[RATE_COLUMN].to_list() == pytest.approx([0.036])
     assert out["y_index"].to_list() == [2]
     assert out["x_index"].to_list() == [3]
+
+
+def _cell(y: int, x: int, weight: float = 0.5) -> SamplingCell:
+    return SamplingCell(
+        y_index=y,
+        x_index=x,
+        grid_lat=42.0,
+        grid_lon=-71.0,
+        weight=weight,
+        sampling=FOOTPRINT_SAMPLING,
+    )
+
+
+def test_sampling_key_is_order_independent() -> None:
+    """Two places covering the same nodes must key identically."""
+    assert sampling_key([_cell(2, 3), _cell(2, 4)]) == sampling_key(
+        [_cell(2, 4), _cell(2, 3)]
+    )
+
+
+def test_sampling_key_distinguishes_different_sets() -> None:
+    assert sampling_key([_cell(2, 3)]) != sampling_key([_cell(2, 4)])
+    assert sampling_key([_cell(2, 3), _cell(2, 4)]) != sampling_key(
+        [_cell(2, 3), _cell(2, 5)]
+    )
+
+
+def test_sampling_cells_keeps_anchor_and_footprint_apart() -> None:
+    """The anchor is the nearest node; cells are what gets averaged."""
+    lat, lon = make_coords()
+    grid = Grid(lat, lon)
+    poly = wkb(box_wkt(lat, lon, [2, 2], [3, 4]))
+    footprint = a_place(float(lat[2, 3]), float(lon[2, 3]), "Footprint", osm_id=1)
+    footprint = footprint.model_copy(update={"geometry_wkb": poly})
+    point = a_place(float(lat[2, 3]), float(lon[2, 3]), "Point", osm_id=2)
+
+    entries = sampling_cells(grid, [footprint, point])
+
+    assert entries[0].sampling == FOOTPRINT_SAMPLING
+    assert entries[0].n_cells == 2
+    assert entries[0].anchor.key == (2, 3)
+    assert {c.key for c in entries[0].cells} == {(2, 3), (2, 4)}
+
+    assert entries[1].sampling == POINT_SAMPLING
+    assert entries[1].n_cells == 1
+    assert entries[1].cells[0].key == entries[1].anchor.key
+
+
+def test_sampling_frame_records_every_node() -> None:
+    lat, lon = make_coords()
+    grid = Grid(lat, lon)
+    poly = wkb(box_wkt(lat, lon, [2, 2], [3, 4]))
+    footprint = a_place(float(lat[2, 3]), float(lon[2, 3]), "Footprint", osm_id=1)
+    footprint = footprint.model_copy(update={"geometry_wkb": poly})
+
+    frame = sampling_frame([footprint], sampling_cells(grid, [footprint]))
+
+    assert frame.height == 2
+    assert frame["sampling"].unique().to_list() == [FOOTPRINT_SAMPLING]
+    assert frame["n_cells"].unique().to_list() == [2]
+    assert frame["sampling_key"].n_unique() == 1
+    assert frame["weight"].sum() == pytest.approx(1.0)
+    assert set(frame["place_key"].to_list()) == {footprint.place_key}
+
+
+def test_series_carries_sampling_columns_for_footprints() -> None:
+    """A multi-node place is self-describing on every hourly row."""
+    lat, lon = make_coords()
+    poly = wkb(box_wkt(lat, lon, [2, 2], [3, 4]))
+    place = a_place(float(lat[2, 3]), float(lon[2, 3]), "Footprint", osm_id=1)
+    place = place.model_copy(update={"geometry_wkb": poly})
+    rate = np.zeros((1, N_Y, N_X))
+    out = extract_series(
+        [place],
+        "2025-07-01",
+        "2025-08-01",
+        opener=make_opener(rate, ["2025-07-15T00"]),
+    )
+    assert out[SAMPLING_COLUMN].unique().to_list() == [FOOTPRINT_SAMPLING]
+    assert out[N_CELLS_COLUMN].to_list() == [2]
+    assert out[SAMPLING_KEY_COLUMN].n_unique() == 1
+
+
+def test_anchor_columns_survive_alongside_footprint_columns() -> None:
+    """The anchor keeps its old meaning; n_cells reveals the difference."""
+    lat, lon = make_coords()
+    poly = wkb(box_wkt(lat, lon, [2, 2], [3, 4]))
+    place = a_place(float(lat[2, 3]), float(lon[2, 3]), "Footprint", osm_id=1)
+    place = place.model_copy(update={"geometry_wkb": poly})
+    rate = np.zeros((1, N_Y, N_X))
+    out = extract_series(
+        [place],
+        "2025-07-01",
+        "2025-08-01",
+        opener=make_opener(rate, ["2025-07-15T00"]),
+    )
+    # The place sits exactly on node (2,3), so the anchor is exact...
+    assert out["y_index"].to_list() == [2]
+    assert out["x_index"].to_list() == [3]
+    assert out["snap_distance_km"].to_list() == pytest.approx([0.0])
+    # ...but the value averaged two nodes, which the old columns hid.
+    assert out[N_CELLS_COLUMN].to_list() == [2]

@@ -15,9 +15,13 @@ Three things this layer is careful about:
   ``convert_time_zone`` takes a static string rather than a column. Local
   hour and month come out as plain integers so the groups can be
   concatenated without a timezone-dtype conflict.
-- **Co-located places are marked.** Places that share a 3 km grid node
-  receive identical numbers; they are flagged rather than silently ranked
-  against each other.
+- **Co-located places are marked.** Places sampled from the *same set
+  of grid nodes* receive identical numbers; they are flagged rather than
+  silently ranked against each other. The identity is the sampled node
+  set (``sampling_key``), not the place's anchor node -- once a
+  footprint is averaged the anchor no longer describes what was read.
+  Two places sharing only some nodes are coupled but distinguishable,
+  so they are not marked tied.
 """
 
 from __future__ import annotations
@@ -27,7 +31,15 @@ from collections.abc import Sequence
 import numpy as np
 import polars as pl
 
-from tstorm_climo.extract import RATE_COLUMN, TIME_COLUMN, VALID_COLUMN
+from tstorm_climo.extract import (
+    N_CELLS_COLUMN,
+    POINT_SAMPLING,
+    RATE_COLUMN,
+    SAMPLING_COLUMN,
+    SAMPLING_KEY_COLUMN,
+    TIME_COLUMN,
+    VALID_COLUMN,
+)
 from tstorm_climo.places import UTC_TIMEZONE, Place
 from tstorm_climo.thresholds import DEFAULT_WET_THRESHOLD_MM_PER_HOUR
 
@@ -91,8 +103,18 @@ def place_summary(
         ``rain_mm`` (accumulated depth; each step is one hour, so mm/h
         sums to mm), ``tied``/``cell_places`` (grid-resolution
         collisions) and a dense ``rank`` where 1 is driest.
+
+    Note:
+        ``cell_places`` counts places whose sampled node **sets** are
+        identical, keyed on ``sampling_key`` rather than the anchor
+        node. Two places sharing a node set receive literally the same
+        number, so they cannot be ranked against each other. Places
+        sharing only some nodes are *not* counted as tied -- they are
+        coupled but not indistinguishable. For point-sampled places
+        ``sampling_key`` is a single node and this reduces to the old
+        anchor-node count exactly.
     """
-    keyed = _with_places(series, places)
+    keyed = _with_sampling(_with_places(series, places))
     wet = wet_rows(keyed, threshold_mm_per_hour)
 
     totals = keyed.group_by("place_key").agg(
@@ -113,6 +135,9 @@ def place_summary(
             pl.col("y_index").first(),
             pl.col("x_index").first(),
             pl.col("snap_distance_km").first(),
+            pl.col(SAMPLING_COLUMN).first(),
+            pl.col(N_CELLS_COLUMN).first(),
+            pl.col(SAMPLING_KEY_COLUMN).first(),
         )
         .join(totals, on="place_key")
         .join(stats, on="place_key")
@@ -122,9 +147,10 @@ def place_summary(
         )
     )
 
-    out = out.with_columns(
-        cell_places=pl.len().over("y_index", "x_index")
-    ).with_columns(tied=pl.col("cell_places") > 1)
+    # Identity of the sampled set, not of the anchor node. See the Note.
+    out = out.with_columns(cell_places=pl.len().over(SAMPLING_KEY_COLUMN)).with_columns(
+        tied=pl.col("cell_places") > 1
+    )
 
     return out.with_columns(
         rank=pl.col("wet_fraction").rank("dense").cast(pl.Int64)
@@ -279,6 +305,27 @@ def _wet_fractions(part: pl.DataFrame) -> pl.DataFrame | None:
     if counts["wet_fraction"].n_unique() < 2:
         return None
     return counts.select("place_key", "wet_fraction")
+
+
+def _with_sampling(series: pl.DataFrame) -> pl.DataFrame:
+    """Ensure the sampling columns exist, synthesising them when absent.
+
+    Artifacts written before footprint sampling (schema v1) carry no
+    sampling columns. Every value in one is a single-node point sample,
+    so the anchor node *is* the sampled set and reconstructing the
+    columns is exact rather than an approximation. That keeps old
+    artifacts readable without silently mislabelling them.
+    """
+    if SAMPLING_KEY_COLUMN in series.columns:
+        return series
+    height = series.height
+    return series.with_columns(
+        pl.Series(SAMPLING_COLUMN, [POINT_SAMPLING] * height, dtype=pl.String),
+        pl.Series(N_CELLS_COLUMN, [1] * height, dtype=pl.Int64),
+        (
+            pl.col("y_index").cast(pl.String) + "x" + pl.col("x_index").cast(pl.String)
+        ).alias(SAMPLING_KEY_COLUMN),
+    )
 
 
 def _with_places(series: pl.DataFrame, places: Sequence[Place]) -> pl.DataFrame:

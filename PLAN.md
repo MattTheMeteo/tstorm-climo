@@ -64,8 +64,8 @@ already caused one wrong threshold in this project. So:
 | `tstorm_climo/osm.py` | `KIND_TAGS`, `build_query(bbox, kinds)`, `run_query(query)` | Overpass API via **httpx**. Retains a descriptive User-Agent, retries on both HTTP statuses and transport errors, and always sets a request timeout. **Retained for small ad-hoc bbox exploration only** — see the place-catalog pull below, which supersedes it for bulk extraction. |
 | `tstorm_climo/places.py` | `Place` (pydantic), `classify`, `from_overpass`, `deduplicate`, `haversine_km`, `to_polars`, `save_csv`, `load_csv` | `Place.place_key` is the stable source-qualified OSM identity (`osm:{type}:{id}`). Ways/relations currently use Overpass centers and their full geometry is not retained; nodes use their position. Kind inferred from the element's own tags (Overpass does not say which selector matched). Dedupe collapses same-named places within 1 km (node+way duplicates) while keeping geographically distinct same-named places. |
 | `tstorm_climo/climatology.py` | `summarize_grid(precipitation)` | Per hourly analysis step, counts CONUS-wide grid points above a threshold (default 0.05 mm/h). Takes an **already-loaded** dataset — I/O lives in `hrrr.load_precipitation`. Coarse-grained (whole dataset, no spatial subset); a global sanity check, not a per-place result. |
-| `tstorm_climo/extract.py` | `extract_series(places, start, end, grid=, opener=)` | Long-format per-place hourly series (`place_key, time, precipitation_mm_per_hour, valid, y_index, x_index, grid_lat, grid_lon, snap_distance_km, tz_name`). `place_key` is independent of input order; summaries join by key. One contiguous block read, then gather in memory. Slices **before** converting units. Sorted by input place order, then time; the time column resets per place and is not globally sorted. |
-| `tstorm_climo/artifacts.py` | `build_hourly_observation_artifact(places, start, end, output_dir)` | Writes an immutable output directory containing `observations.parquet`, the exact `places.parquet` catalog used, and `manifest.json`. Current variable is `rain_rate` in mm/h; no threshold is applied. Includes a canonical place-catalog hash and valid/invalid row counts. Existing output directories are not overwritten. |
+| `tstorm_climo/extract.py` | `extract_series(places, start, end, grid=, opener=)`, `sampling_cells(grid, places)`, `sampling_frame(places, sampling)` | Long-format per-place hourly series (`place_key, time, precipitation_mm_per_hour, valid, y_index, x_index, grid_lat, grid_lon, snap_distance_km, tz_name, sampling, n_cells, sampling_key`). `place_key` is independent of input order; summaries join by key. One contiguous block read, then gather in memory. Slices **before** converting units. Sorted by input place order, then time; the time column resets per place and is not globally sorted. `y_index`/`x_index`/`grid_lat`/`grid_lon`/`snap_distance_km` describe the place's **anchor** (nearest node to its representative point) and are not the nodes that were averaged; `n_cells` and `sampling_key` say what was, and `sampling_frame` holds the full node list. `sampling_cells` is a pure function of grid + places with no archive read, so callers can get the footprint without re-extracting. |
+| `tstorm_climo/artifacts.py` | `build_hourly_observation_artifact(places, start, end, output_dir)` | Writes an immutable output directory containing `observations.parquet`, the exact `places.parquet` catalog used, `sampling.parquet` (one row per place/node actually averaged), and `manifest.json`. Current variable is `rain_rate` in mm/h; no threshold is applied. Includes a canonical place-catalog hash and valid/invalid row counts. Existing output directories are not overwritten. Note the artifact renames `time`→`time_utc` and `precipitation_mm_per_hour`→`value` for multi-variable storage, so `summarize.place_summary` needs those mapped back before it can read `observations.parquet` directly. |
 | `tstorm_climo/catalog.py` | `fetch_places(kinds, bbox=)`, `save_places(...)` | Pulls LayerCake's POI GeoParquet with DuckDB and writes a normalized catalog release with WKB geometry and provenance. |
 | `tstorm_climo/geofabrik.py` | `build_geofabrik_catalog(region, kinds, output_dir, bbox=)` | Downloads one regional raw `.osm.pbf` to temporary storage, filters nodes and assembled OSM areas by the shared tag rules, computes representative points, and saves a catalog release. The source PBF is discarded after the build. |
 | `tstorm_climo/catalog_storage.py` | `publish_catalog_to_s3(catalog_dir, bucket, prefix=)` | Optional boto3-backed publishing: uploads release files under unique keys, then updates a source/region-scoped `latest.json` pointer. Install with `uv sync --extra catalog-s3`. |
@@ -446,6 +446,9 @@ injected `opener`; no network in the fast test suite.
    - The **reliability figure is always printed with the table**, along
      with the caveats and both licence attributions. A leaderboard
      without it is misleading, so it is not optional output.
+   - `--places` accepts a catalog `places.parquet` as well as a CSV, so
+     the table can be built from footprint geometry rather than being
+     stuck on nearest-node samples (see item 7).
     - This produces a derived summary for fixed reports. It is not the
       interactive app's source artifact: a summary cannot be re-aggregated
       correctly for an arbitrary date range. The app needs hourly
@@ -465,21 +468,47 @@ injected `opener`; no network in the fast test suite.
    Track event start hour-of-day, duration, and accumulation where the
    source supports it. Keep these rules as analysis options, not baked into
    the observation artifact.
-7. ~~**Spatial averaging over a course footprint.**~~ **Partly landed;
-   still open.** A generic 3×3 window is identical for
-   any two points in the same cell,
-   so it blurs without separating. A true footprint average (area-weight
-   the OSM polygon over covered cells) could separate some co-located
-   courses, but needs `pyproj` + polygon-clipping and re-fetching
-   geometry — two new dependencies and a schema change to resolve 3
-   pairs out of 50 courses. Not worth it. Revisit only if a finer
-   dataset becomes available.
-   - `Grid.cover_cells()` (see Phase 1) now delivers
-     node-centre-in-polygon with none of that cost. What is **still
-     missing** is the actual area weighting, the wiring into
-     `extract.py` / the climatology, and a decision on whether it earns
-     its place against the simpler point sample. Until then `cover_cells`
-     is built and tested but unused by the pipeline.
+7. ~~**Spatial averaging over a course footprint.**~~ **Landed**
+    (node-centre averaging). A generic 3x3 window is identical for
+    any two points in the same cell,
+    so it blurs without separating. A true footprint average (area-weight
+    the OSM polygon over covered cells) could separate some co-located
+    courses, but needs `pyproj` + polygon-clipping and re-fetching
+    geometry — two new dependencies and a schema change to resolve 3
+    pairs out of 50 courses. Not worth it. Revisit only if a finer
+    dataset becomes available.
+    - `Grid.cover_cells()` delivers node-centre-in-polygon with none of
+      that cost, and `extract_series` now averages covered nodes with
+      equal weights, falling back to the nearest node for point or
+      uncovered places.
+    - **The full footprint is recorded, not just the anchor.** Artifacts
+      gained a `sampling.parquet` table (one row per place/node) plus
+      `sampling` / `n_cells` / `sampling_key` columns on the
+      observations (schema v2). The pre-existing anchor columns kept
+      their meaning, which is the trap they always were: a footprint
+      place sitting exactly on its anchor reports `snap_distance_km = 0`
+      while averaging several nodes. `n_cells` is what exposes that.
+    - **`cell_places` / `tied` were re-keyed onto `sampling_key`.** They
+      grouped on the anchor node, which stopped describing the sampling
+      once footprints applied: two courses sharing an anchor but
+      averaging disjoint node sets were reported as unrankable, and vice
+      versa. The honest test is whether two places read the *same* node
+      set. **The Phase 1 resolution numbers ("86 distinct nodes", "3
+      unrankable pairs") therefore no longer apply to footprint-sampled
+      places and must be recomputed before publication.** Places sharing
+      only some nodes are coupled but distinguishable, so they are not
+      marked tied; a partial-overlap metric (Jaccard) is a reasonable
+      follow-up.
+    - **Still open:** re-run the North Shore leaderboard on footprint
+      sampling and compare against the point-sampled baseline. Filtering
+      `sampling == "point"` in a v2 artifact reproduces the old numbers
+      exactly, so that comparison is a filter rather than a rebuild.
+    - `rain-report` now reads through `load_places` as well, so it
+      accepts a catalog `places.parquet` and averages footprints the same
+      way `build-observations` does. Both `--places` arguments advertise
+      both inputs. The printed caveat text was updated too: it described
+      tying as "sharing a grid node", which stopped being the rule once
+      footprints apply.
 8. **Threshold sensitivity study.** Compare wet fractions across
    thresholds (0, 0.1, 0.5, 1 mm/h — see the units note in open
    questions) and against `categorical_rain_surface`, which may be a

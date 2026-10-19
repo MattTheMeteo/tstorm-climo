@@ -12,12 +12,24 @@ from typing import Any, cast
 
 import polars as pl
 
-from tstorm_climo.extract import RATE_COLUMN, TIME_COLUMN, VALID_COLUMN, extract_series
+from tstorm_climo.extract import (
+    N_CELLS_COLUMN,
+    RATE_COLUMN,
+    SAMPLING_COLUMN,
+    SAMPLING_KEY_COLUMN,
+    TIME_COLUMN,
+    VALID_COLUMN,
+    extract_series,
+    sampling_cells,
+    sampling_frame,
+)
+from tstorm_climo.grid import Grid
 from tstorm_climo.hrrr import (
     HRRR_ANALYSIS_DATASET_ID,
     MIN_VALID_DATE,
     PRECIPITATION_VARIABLE,
     Opener,
+    open_analysis,
 )
 from tstorm_climo.places import Place
 from tstorm_climo.provenance import (
@@ -27,7 +39,11 @@ from tstorm_climo.provenance import (
     PLACES_LICENSE,
 )
 
-ARTIFACT_SCHEMA_VERSION = 1
+# v2 adds ``sampling``/``n_cells``/``sampling_key`` to the observations
+# and a ``sampling.parquet`` table recording every node a place was
+# averaged over. v1 recorded only the anchor node, which stops being the
+# sampled set once a footprint applies.
+ARTIFACT_SCHEMA_VERSION = 2
 RAIN_RATE_VARIABLE = "rain_rate"
 TIME_UTC_COLUMN = "time_utc"
 VALUE_COLUMN = "value"
@@ -44,7 +60,12 @@ OBSERVATION_COLUMNS = (
     "grid_lon",
     "snap_distance_km",
     "tz_name",
+    SAMPLING_COLUMN,
+    N_CELLS_COLUMN,
+    SAMPLING_KEY_COLUMN,
 )
+
+SAMPLING_FILE = "sampling.parquet"
 
 
 def build_hourly_observation_artifact(
@@ -66,7 +87,7 @@ def build_hourly_observation_artifact(
         start: Requested inclusive start time.
         end: Requested inclusive end time.
         output_dir: New directory for ``observations.parquet``,
-            ``places.parquet``, and ``manifest.json``.
+            ``places.parquet``, ``sampling.parquet``, and ``manifest.json``.
         opener: Optional HRRR opener, primarily for tests.
 
     Returns:
@@ -84,12 +105,17 @@ def build_hourly_observation_artifact(
         raise FileExistsError(f"artifact output already exists: {destination}")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    series = extract_series(places, start, end, opener=opener)
+    # Build the grid here as well as inside extract_series so the sampling
+    # table can be written without re-extracting. Opening the archive is
+    # lazy, so the second open costs metadata only.
+    grid = Grid.from_dataset(open_analysis(opener=opener))
+    series = extract_series(places, start, end, grid=grid, opener=opener)
     if series.height == 0:
         raise ValueError(
             f"no observations for {start} to {end}; the usable archive "
             f"window starts {MIN_VALID_DATE}"
         )
+    sampling = sampling_frame(places, sampling_cells(grid, places))
 
     observations = (
         series.rename({TIME_COLUMN: TIME_UTC_COLUMN, RATE_COLUMN: VALUE_COLUMN})
@@ -137,6 +163,26 @@ def build_hourly_observation_artifact(
             "Footprint-weighted average over covered grid nodes where a "
             "place carries polygon geometry; nearest grid point otherwise."
         ),
+        "sampling_cells": {
+            "file": SAMPLING_FILE,
+            "description": (
+                "One row per (place, grid node) actually averaged. "
+                "y_index/x_index/grid_lat/grid_lon in observations.parquet "
+                "are the place's anchor node, not this set."
+            ),
+            "row_count": sampling.height,
+            "columns": list(sampling.columns),
+            "footprint_places": int(
+                sampling.filter(pl.col(SAMPLING_COLUMN) == "footprint")
+                .get_column("place_key")
+                .n_unique()
+            ),
+            "point_places": int(
+                sampling.filter(pl.col(SAMPLING_COLUMN) == "point")
+                .get_column("place_key")
+                .n_unique()
+            ),
+        },
         "place_catalog": {
             "place_count": len(places),
             "content_sha256": catalog_hash,
@@ -162,6 +208,7 @@ def build_hourly_observation_artifact(
         staging = Path(temporary)
         observations.write_parquet(staging / "observations.parquet")
         places_frame.write_parquet(staging / "places.parquet")
+        sampling.write_parquet(staging / SAMPLING_FILE)
         (staging / "manifest.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

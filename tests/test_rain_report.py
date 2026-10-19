@@ -67,9 +67,8 @@ def make_series(n_hours: int = 48, places=PLACES) -> pl.DataFrame:
     base = datetime(2025, 7, 15, tzinfo=UTC)
     patterns = {0: 0.0, 1: 1.0, 2: 0.5}
     rows: dict[str, list] = {k: [] for k in SCHEMA}
-    for place in places:
-        index = PLACES.index(place)
-        pattern = patterns[index]
+    for index, place in enumerate(places):
+        pattern = patterns.get(index, 0.25)
         for hour in range(n_hours):
             rows["place_key"].append(place.place_key)
             rows["time"].append(base + timedelta(hours=hour))
@@ -81,6 +80,9 @@ def make_series(n_hours: int = 48, places=PLACES) -> pl.DataFrame:
             rows["grid_lon"].append(-70.9)
             rows["snap_distance_km"].append(1.0)
             rows["tz_name"].append("America/New_York")
+            rows["sampling"].append("point")
+            rows["n_cells"].append(1)
+            rows["sampling_key"].append(f"{index}x0")
     return pl.DataFrame(rows, schema=SCHEMA)
 
 
@@ -204,6 +206,102 @@ def test_rain_report_non_golf_kind_is_not_dropped(
     out = capsys.readouterr().out
     assert "A Beach" in out
     assert "Dry Course" not in out
+
+
+def test_rain_report_accepts_a_catalog_parquet(fake_extract, capsys, tmp_path) -> None:
+    """rain-report must read the same inputs as build-observations.
+
+    Regression: it used ``load_csv``, so a catalog release carrying
+    footprint geometry was rejected -- or worse, silently analysed
+    without the footprints that justify the catalog.
+    """
+    path = tmp_path / "places.parquet"
+    pl.DataFrame(
+        {
+            "osm_type": ["way"] * len(PLACES),
+            "osm_id": [str(p.osm_id) for p in PLACES],
+            "name": [p.name for p in PLACES],
+            "kind": [p.kind for p in PLACES],
+            "lat": [p.lat for p in PLACES],
+            "lon": [p.lon for p in PLACES],
+        }
+    ).write_parquet(path)
+
+    assert (
+        main(
+            [
+                "rain-report",
+                "--places",
+                str(path),
+                "--start",
+                "2025-07-01",
+                "--end",
+                "2025-08-01",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    for place in PLACES:
+        assert place.name in out
+
+
+def test_rain_report_parquet_keeps_footprint_geometry(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """Geometry must survive the parquet path, not just the file read.
+
+    The report averages over covered nodes, so a catalog parquet that
+    loads but drops geometry would quietly produce point samples.
+    """
+    footprint = bytes.fromhex("0103000000")  # stands in for a WKB blob
+    pl.DataFrame(
+        {
+            "osm_type": ["way"],
+            "osm_id": ["42"],
+            "name": ["Footprint Course"],
+            "kind": ["golf_course"],
+            "lat": [42.0],
+            "lon": [-70.9],
+            "geometry_wkb": [footprint],
+        }
+    ).write_parquet(tmp_path / "places.parquet")
+
+    seen: list[Place] = []
+    import tstorm_climo.cli as cli_module
+
+    def capture(places, start, end, **kwargs):
+        seen.extend(places)
+        return make_series(n_hours=2, places=list(places))
+
+    monkeypatch.setattr(cli_module, "extract_series", capture)
+    assert (
+        main(
+            [
+                "rain-report",
+                "--places",
+                str(tmp_path / "places.parquet"),
+                "--start",
+                "2025-07-01",
+                "--end",
+                "2025-08-01",
+            ]
+        )
+        == 0
+    )
+    assert len(seen) == 1
+    assert seen[0].geometry_wkb == footprint
+    assert seen[0].osm_id == 42
+    assert seen[0].name == "Footprint Course"
+
+
+def test_places_help_mentions_parquet_for_both_commands(capsys) -> None:
+    """Both --places arguments must advertise the same inputs."""
+    parser = build_parser()
+    for command in ("rain-report", "build-observations"):
+        with pytest.raises(SystemExit):
+            parser.parse_args([command, "--help"])
+        assert "places.parquet" in capsys.readouterr().out
 
 
 def test_rain_report_shows_reliability_and_caveats(

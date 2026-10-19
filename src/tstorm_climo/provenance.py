@@ -74,8 +74,10 @@ def build_metadata(
             "places_license": PLACES_LICENSE,
         },
         "caveats": [
-            "3 km analysis grid: places sharing a grid node get identical "
-            "numbers and are flagged 'tied'.",
+            "3 km analysis grid: places read from the same set of grid "
+            "nodes get identical numbers and are flagged 'tied'. A place "
+            "carrying polygon geometry is averaged over the nodes its "
+            "footprint covers; one without is sampled at its nearest node.",
             "Most between-place variation is sampling noise; see "
             "split_half_reliability.",
             "Model analysis, not observations.",

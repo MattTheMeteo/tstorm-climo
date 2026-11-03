@@ -4,24 +4,32 @@ The server is pointed at built artifacts the same way the retired marimo
 app was: ``TSTORM_CLIMO_ARTIFACT`` (the observation artifact) and the
 optional ``TSTORM_CLIMO_GRIDDED`` (the display store). Resolution stays
 outside the analysis package; see PLAN.md Phase 6.
+
+``TSTORM_CLIMO_CORS_ORIGINS`` is a comma-separated list of origins the
+browser app may be served from (default ``*`` for local development).
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
 class Settings:
-    """Artifact paths the API serves."""
+    """Artifact paths the API serves, plus its CORS allow-list."""
 
     artifact_dir: str | None
     gridded_dir: str | None
+    cors_origins: list[str] = field(default_factory=lambda: ["*"])
 
     @classmethod
     def from_env(cls) -> Settings:
+        origins = os.environ.get("TSTORM_CLIMO_CORS_ORIGINS", "*")
         return cls(
             artifact_dir=os.environ.get("TSTORM_CLIMO_ARTIFACT") or None,
             gridded_dir=os.environ.get("TSTORM_CLIMO_GRIDDED") or None,
+            cors_origins=[
+                origin.strip() for origin in origins.split(",") if origin.strip()
+            ],
         )

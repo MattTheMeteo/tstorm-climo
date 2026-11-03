@@ -8,14 +8,20 @@ HRRR archive or the network; it reads the already-prepared artifacts.
 from __future__ import annotations
 
 from datetime import date
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from tstorm_climo.query import artifact_report
 from tstorm_climo.thresholds import DEFAULT_WET_THRESHOLD_MM_PER_HOUR
 
-from .schemas import ReportRequest
+from .schemas import (
+    CoverageResponse,
+    PlaceResponse,
+    ReportRequest,
+    ReportResponse,
+    WetnessResponse,
+)
 from .serialize import iso, json_safe, place_record, records, wetness_geojson
 from .state import Artifacts, get_artifacts
 
@@ -23,36 +29,38 @@ router = APIRouter(prefix="/api")
 
 ArtifactsDep = Annotated[Artifacts, Depends(get_artifacts)]
 
-_NO_ARTIFACT = HTTPException(
-    status_code=503, detail="no observation artifact configured"
-)
-
 
 @router.get("/coverage")
-def coverage(artifacts: ArtifactsDep) -> dict[str, Any]:
+def coverage(artifacts: ArtifactsDep) -> CoverageResponse:
     """Metadata the frontend needs to bound its controls."""
     if artifacts.observation is None:
-        raise _NO_ARTIFACT
+        raise HTTPException(
+            status_code=503, detail="no observation artifact configured"
+        )
     manifest = artifacts.observation.manifest
-    return {
-        "observed_start": iso(artifacts.observation.observed_start),
-        "observed_end": iso(artifacts.observation.observed_end),
-        "place_count": len(artifacts.observation.places),
-        "kinds": sorted({place.kind for place in artifacts.observation.places}),
-        "variable": manifest.get("variable", {}).get("id"),
-        "units": manifest.get("variable", {}).get("units"),
-        "gridded": artifacts.gridded is not None,
-    }
+    return CoverageResponse.model_validate(
+        {
+            "observed_start": iso(artifacts.observation.observed_start),
+            "observed_end": iso(artifacts.observation.observed_end),
+            "place_count": len(artifacts.observation.places),
+            "kinds": sorted({place.kind for place in artifacts.observation.places}),
+            "variable": manifest.get("variable", {}).get("id"),
+            "units": manifest.get("variable", {}).get("units"),
+            "gridded": artifacts.gridded is not None,
+        }
+    )
 
 
 @router.get("/places")
 def places(
     artifacts: ArtifactsDep,
     kind: Annotated[str | None, Query()] = None,
-) -> dict[str, Any]:
+) -> dict[str, list[PlaceResponse]]:
     """The artifact's places, optionally filtered to one kind."""
     if artifacts.observation is None:
-        raise _NO_ARTIFACT
+        raise HTTPException(
+            status_code=503, detail="no observation artifact configured"
+        )
     selected = [
         place
         for place in artifacts.observation.places
@@ -62,32 +70,36 @@ def places(
 
 
 @router.post("/report")
-def report(artifacts: ArtifactsDep, body: ReportRequest) -> dict[str, Any]:
+def report(artifacts: ArtifactsDep, body: ReportRequest) -> ReportResponse:
     """The leaderboard (summary, monthly, hourly) for one selection."""
     if artifacts.observation is None:
-        raise _NO_ARTIFACT
+        raise HTTPException(
+            status_code=503, detail="no observation artifact configured"
+        )
     known = {place.place_key for place in artifacts.observation.places}
-    keys = [key for key in dict.fromkeys(body.place_keys) if key in known]
-    if not keys:
+    keys = list(dict.fromkeys(body.place_keys))
+    if any(key not in known for key in keys):
         raise HTTPException(
             status_code=404, detail="none of the requested places are in the artifact"
         )
     result = artifact_report(
         artifacts.observation,
         keys,
-        start=body.start,
-        end=body.end,
+        start=body.start.isoformat() if body.start is not None else None,
+        end=body.end.isoformat() if body.end is not None else None,
         threshold_mm_per_hour=body.threshold_mm_per_hour,
     )
-    return {
-        "summary": records(result.summary),
-        "monthly": records(result.monthly),
-        "hourly": records(result.hourly),
-        "reliability": json_safe(result.reliability),
-        "start": iso(result.start),
-        "end": iso(result.end),
-        "places": [place_record(place) for place in result.places],
-    }
+    return ReportResponse.model_validate(
+        {
+            "summary": records(result.summary),
+            "monthly": records(result.monthly),
+            "hourly": records(result.hourly),
+            "reliability": json_safe(result.reliability),
+            "start": iso(result.start),
+            "end": iso(result.end),
+            "places": [place_record(place) for place in result.places],
+        }
+    )
 
 
 @router.get("/wetness")
@@ -95,11 +107,15 @@ def wetness(
     artifacts: ArtifactsDep,
     start: Annotated[date | None, Query()] = None,
     end: Annotated[date | None, Query()] = None,
-    threshold: Annotated[float, Query()] = DEFAULT_WET_THRESHOLD_MM_PER_HOUR,
-) -> dict[str, Any]:
+    threshold: Annotated[
+        float, Query(ge=0, allow_inf_nan=False)
+    ] = DEFAULT_WET_THRESHOLD_MM_PER_HOUR,
+) -> WetnessResponse:
     """The wet-hours-per-node map as GeoJSON, from the gridded store."""
     if artifacts.gridded is None:
         raise HTTPException(status_code=503, detail="no gridded artifact configured")
+    if start is not None and end is not None and start > end:
+        raise HTTPException(status_code=422, detail="start must be on or before end")
     store = artifacts.gridded
     coverage_start = store.observed_start.date() if store.observed_start else None
     coverage_end = store.observed_end.date() if store.observed_end else None
@@ -116,10 +132,11 @@ def wetness(
         raise HTTPException(
             status_code=404, detail="the gridded artifact has no observed coverage"
         )
-
-    return wetness_geojson(
-        store.dataset,
-        start=str(window_start),
-        end=str(window_end),
-        threshold=threshold,
+    return WetnessResponse.model_validate(
+        wetness_geojson(
+            store.dataset,
+            start=str(window_start),
+            end=str(window_end),
+            threshold=threshold,
+        )
     )

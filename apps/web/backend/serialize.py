@@ -18,6 +18,8 @@ import xarray as xr
 from tstorm_climo.gridded import valid_hours, wet_hours
 from tstorm_climo.places import Place
 
+from .schemas import PlaceResponse, PointGeometry
+
 
 def json_safe(value: Any) -> Any:
     """Recursively make a value JSON-serializable (NaN/Inf -> None)."""
@@ -42,17 +44,17 @@ def iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def place_record(place: Place) -> dict[str, Any]:
+def place_record(place: Place) -> PlaceResponse:
     """A place as the API exposes it: scalar fields plus its point geometry."""
-    return {
-        "place_key": place.place_key,
-        "name": place.display_name,
-        "kind": place.kind,
-        "lat": place.lat,
-        "lon": place.lon,
-        "timezone": place.timezone,
-        "geometry": {"type": "Point", "coordinates": [place.lon, place.lat]},
-    }
+    return PlaceResponse(
+        place_key=place.place_key,
+        name=place.display_name,
+        kind=place.kind,
+        lat=place.lat,
+        lon=place.lon,
+        timezone=place.timezone,
+        geometry=PointGeometry(coordinates=(place.lon, place.lat)),
+    )
 
 
 def wetness_geojson(

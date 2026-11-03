@@ -6,13 +6,16 @@ optional ``TSTORM_CLIMO_GRIDDED`` (the display store). Resolution stays
 outside the analysis package; see PLAN.md Phase 6.
 
 ``TSTORM_CLIMO_CORS_ORIGINS`` is a comma-separated list of origins the
-browser app may be served from (default ``*`` for local development).
+browser app may be served from. The default is limited to local Next.js
+development; deployments should set their exact frontend origin(s).
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+DEFAULT_CORS_ORIGINS = ("http://localhost:3000", "http://127.0.0.1:3000")
 
 
 @dataclass(frozen=True)
@@ -21,15 +24,19 @@ class Settings:
 
     artifact_dir: str | None
     gridded_dir: str | None
-    cors_origins: list[str] = field(default_factory=lambda: ["*"])
+    cors_origins: tuple[str, ...] = DEFAULT_CORS_ORIGINS
 
     @classmethod
     def from_env(cls) -> Settings:
-        origins = os.environ.get("TSTORM_CLIMO_CORS_ORIGINS", "*")
+        origins = os.environ.get("TSTORM_CLIMO_CORS_ORIGINS")
         return cls(
             artifact_dir=os.environ.get("TSTORM_CLIMO_ARTIFACT") or None,
             gridded_dir=os.environ.get("TSTORM_CLIMO_GRIDDED") or None,
-            cors_origins=[
-                origin.strip() for origin in origins.split(",") if origin.strip()
-            ],
+            cors_origins=(
+                DEFAULT_CORS_ORIGINS
+                if origins is None
+                else tuple(
+                    origin.strip() for origin in origins.split(",") if origin.strip()
+                )
+            ),
         )

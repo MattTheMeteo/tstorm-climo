@@ -38,7 +38,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else None
         )
         app.state.artifacts = Artifacts(observation=observation, gridded=gridded)
-        yield
+        try:
+            yield
+        finally:
+            if gridded is not None:
+                gridded.dataset.close()
 
     application = FastAPI(title="tstorm-climo API", lifespan=lifespan)
     application.add_middleware(

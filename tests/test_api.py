@@ -12,7 +12,7 @@ import xarray as xr
 from fastapi.testclient import TestClient
 
 from apps.web.backend.app import create_app
-from apps.web.backend.config import Settings
+from apps.web.backend.config import DEFAULT_CORS_ORIGINS, Settings
 from tstorm_climo.artifacts import build_hourly_observation_artifact
 from tstorm_climo.gridded import build_gridded_artifact
 from tstorm_climo.places import Place
@@ -35,6 +35,7 @@ MM_PER_HOUR = {
 
 def make_opener():
     values = np.zeros((HOURS, 3, 3), dtype=np.float32)
+    values[:, 1, 2] = np.nan
     for (row, col), series in MM_PER_HOUR.items():
         values[:, row, col] = np.array(series) / 3600.0
 
@@ -97,6 +98,19 @@ def test_health(client: TestClient) -> None:
     assert client.get("/health").json() == {"status": "ok"}
 
 
+def test_data_endpoints_report_unconfigured_artifacts_as_unavailable() -> None:
+    with TestClient(
+        create_app(Settings(artifact_dir=None, gridded_dir=None))
+    ) as client:
+        assert client.get("/api/coverage").status_code == 503
+        assert client.get("/api/places").status_code == 503
+        assert (
+            client.post("/api/report", json={"place_keys": ["osm:way:1"]}).status_code
+            == 503
+        )
+        assert client.get("/api/wetness").status_code == 503
+
+
 def test_coverage_reports_the_artifact(client: TestClient) -> None:
     body = client.get("/api/coverage").json()
 
@@ -127,9 +141,11 @@ def test_report_returns_the_leaderboard(client: TestClient) -> None:
     # Drier first: course 2 (1 wet hour) before course 1 (3 wet hours).
     assert [row["name"] for row in body["summary"]] == ["Course 2", "Course 1"]
     assert body["reliability"] is not None
+    assert "reliability" in body
     assert body["monthly"]
     assert body["hourly"]
     assert body["start"] and body["end"]
+    assert "timezone" not in body["summary"][0]
 
 
 def test_report_rejects_too_many_places(client: TestClient) -> None:
@@ -145,6 +161,32 @@ def test_report_rejects_unknown_places(client: TestClient) -> None:
     assert response.status_code == 404
 
 
+def test_report_rejects_a_mixed_known_and_unknown_selection(client: TestClient) -> None:
+    response = client.post(
+        "/api/report", json={"place_keys": ["osm:way:1", "osm:way:999"]}
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"place_keys": ["osm:way:1"], "start": "not-a-date"},
+        {"place_keys": ["osm:way:1"], "start": "2025-07-16", "end": START},
+        {"place_keys": ["osm:way:1"], "threshold_mm_per_hour": -0.1},
+        {"place_keys": ["osm:way:1"], "threshold_mm_per_hour": "NaN"},
+        {"place_keys": ["osm:way:1"], "unexpected": True},
+    ],
+)
+def test_report_rejects_invalid_request_values(
+    client: TestClient, body: dict[str, object]
+) -> None:
+    response = client.post("/api/report", json=body)
+
+    assert response.status_code == 422
+
+
 def test_wetness_returns_geojson(client: TestClient) -> None:
     body = client.get("/api/wetness").json()
 
@@ -153,4 +195,70 @@ def test_wetness_returns_geojson(client: TestClient) -> None:
     assert len(body["features"]) == 6
     # Course 1 (3 wet hours) + course 2 (1 wet hour); every hour is valid.
     assert sum(f["properties"]["wet_hours"] for f in body["features"]) == 4
-    assert all(f["properties"]["valid_hours"] == HOURS for f in body["features"])
+    missing = next(
+        feature
+        for feature in body["features"]
+        if feature["geometry"]["coordinates"]
+        == [float(GRID_LON[1, 2]), float(GRID_LAT[1, 2])]
+    )
+    assert missing["properties"] == {
+        "wet_hours": 0,
+        "valid_hours": 0,
+        "wet_fraction": None,
+    }
+    valid = [feature for feature in body["features"] if feature is not missing]
+    assert all(feature["properties"]["valid_hours"] == HOURS for feature in valid)
+    assert all(feature["properties"]["wet_fraction"] is not None for feature in valid)
+
+
+def test_wetness_rejects_invalid_ranges_and_thresholds(client: TestClient) -> None:
+    reversed_dates = client.get(
+        "/api/wetness", params={"start": "2025-07-16", "end": START}
+    )
+    negative_threshold = client.get("/api/wetness", params={"threshold": "-1"})
+    infinite_threshold = client.get("/api/wetness", params={"threshold": "inf"})
+
+    assert reversed_dates.status_code == 422
+    assert negative_threshold.status_code == 422
+    assert infinite_threshold.status_code == 422
+
+
+def test_wetness_clamps_selected_dates_to_coverage(client: TestClient) -> None:
+    body = client.get(
+        "/api/wetness",
+        params={"start": START, "end": START, "threshold": 0.05},
+    ).json()
+
+    assert (
+        sum(feature["properties"]["valid_hours"] for feature in body["features"])
+        == 5 * HOURS
+    )
+
+
+def test_config_defaults_to_local_frontend_origins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TSTORM_CLIMO_CORS_ORIGINS", raising=False)
+    monkeypatch.delenv("TSTORM_CLIMO_ARTIFACT", raising=False)
+    monkeypatch.delenv("TSTORM_CLIMO_GRIDDED", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.cors_origins == DEFAULT_CORS_ORIGINS
+    assert "*" not in settings.cors_origins
+
+
+def test_config_reads_trimmed_environment_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TSTORM_CLIMO_ARTIFACT", "/tmp/observations")
+    monkeypatch.setenv("TSTORM_CLIMO_GRIDDED", "/tmp/gridded")
+    monkeypatch.setenv(
+        "TSTORM_CLIMO_CORS_ORIGINS", " https://app.example, http://localhost:3000 "
+    )
+
+    settings = Settings.from_env()
+
+    assert settings.artifact_dir == "/tmp/observations"
+    assert settings.gridded_dir == "/tmp/gridded"
+    assert settings.cors_origins == ("https://app.example", "http://localhost:3000")

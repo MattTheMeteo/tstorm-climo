@@ -18,6 +18,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      # The app group is what the hosted service runs on, so its pins
+      # are resolved and type-checked here too. A broken marimo pin
+      # must not reach a deploy.
+      - name: Install app dependencies
+        run: uv sync --frozen --group app
+
       - name: Tests
         run: uv run pytest --cov=src/tstorm_climo --cov-report=term-missing
 
@@ -29,3 +35,6 @@ jobs:
 
       - name: Type check
         run: uv run ty check
+
+      - name: Build
+        run: uv build

@@ -65,14 +65,16 @@ already caused one wrong threshold in this project. So:
 | `tstorm_climo/places.py` | `Place` (pydantic), `classify`, `from_overpass`, `deduplicate`, `haversine_km`, `to_polars`, `save_csv`, `load_csv` | `Place.place_key` is the stable source-qualified OSM identity (`osm:{type}:{id}`). Ways/relations currently use Overpass centers and their full geometry is not retained; nodes use their position. Kind inferred from the element's own tags (Overpass does not say which selector matched). Dedupe collapses same-named places within 1 km (node+way duplicates) while keeping geographically distinct same-named places. |
 | `tstorm_climo/climatology.py` | `summarize_grid(precipitation)` | Per hourly analysis step, counts CONUS-wide grid points above a threshold (default 0.05 mm/h). Takes an **already-loaded** dataset — I/O lives in `hrrr.load_precipitation`. Coarse-grained (whole dataset, no spatial subset); a global sanity check, not a per-place result. |
 | `tstorm_climo/extract.py` | `extract_series(places, start, end, grid=, opener=)`, `sampling_cells(grid, places)`, `sampling_frame(places, sampling)` | Long-format per-place hourly series (`place_key, time, precipitation_mm_per_hour, valid, y_index, x_index, grid_lat, grid_lon, snap_distance_km, tz_name, sampling, n_cells, sampling_key`). `place_key` is independent of input order; summaries join by key. One contiguous block read, then gather in memory. Slices **before** converting units. Sorted by input place order, then time; the time column resets per place and is not globally sorted. `y_index`/`x_index`/`grid_lat`/`grid_lon`/`snap_distance_km` describe the place's **anchor** (nearest node to its representative point) and are not the nodes that were averaged; `n_cells` and `sampling_key` say what was, and `sampling_frame` holds the full node list. `sampling_cells` is a pure function of grid + places with no archive read, so callers can get the footprint without re-extracting. |
-| `tstorm_climo/artifacts.py` | `build_hourly_observation_artifact(places, start, end, output_dir)` | Writes an immutable output directory containing `observations.parquet`, the exact `places.parquet` catalog used, `sampling.parquet` (one row per place/node actually averaged), and `manifest.json`. Current variable is `rain_rate` in mm/h; no threshold is applied. Includes a canonical place-catalog hash and valid/invalid row counts. Existing output directories are not overwritten. Note the artifact renames `time`→`time_utc` and `precipitation_mm_per_hour`→`value` for multi-variable storage, so `summarize.place_summary` needs those mapped back before it can read `observations.parquet` directly. |
+| `tstorm_climo/artifacts.py` | `build_hourly_observation_artifact(places, start, end, output_dir)`, `load_observation_artifact(directory)`, `ObservationArtifact` | Writes an immutable output directory containing a place-clustered `observations/` of sharded Parquet files, a `places.parquet` snapshot, and `manifest.json` (schema v3). The hourly table stores only the columns that change hour to hour (`place_key`, `time_utc`, `variable`, `value`, `valid`), sorted by place so a `place_key` predicate skips whole row groups; everything constant per place (timezone, anchor node, sampling identity) lives once in `places.parquet`. Current variable is `rain_rate` in mm/h; no threshold is applied. Existing output directories are not overwritten. The reader holds the observations as a **lazy scan** and checks `schema_version` before reading anything. |
+| `tstorm_climo/query.py` | `select_observations(artifact, place_keys, ...)`, `select_all_observations(artifact, ...)`, `artifact_report(artifact, place_keys, ...)`, `selected_places(artifact, place_keys)`, `build_wetness_summary(artifact, ...)`, `matching_row_groups(...)` | The query layer over a loaded artifact. `select_observations` pushes a bounded selection (at most `MAX_SELECTED_PLACES`) into the lazy Parquet plan and collects it, joining the static per-place columns back so the result feeds `summarize` unchanged; `select_all_observations` is the uncapped batch variant. A requested range is clamped to the artifact's observed coverage, and the generic `value` column is renamed back to the quantity's own name. `artifact_report` bundles the summary, monthly, and hourly tables plus the reliability figure; `build_wetness_summary` produces the one-row-per-place map; `matching_row_groups` measures the pushdown. No network access and no marimo import. |
 | `tstorm_climo/catalog.py` | `match_tags(tags, kinds)`, `match_source(kind)`, `deduplicate_places(...)`, `exclude_practice_facilities(...)`, `save_places(...)` | Shared catalog layer: kind-to-tag matching, duplicate and practice-facility cleanup, the normalized WKB schema, and the immutable release directory. Source-specific retrieval lives in `geofabrik.py` and `osm.py`. |
 | `tstorm_climo/geofabrik.py` | `build_geofabrik_catalog(region, kinds, output_dir, bbox=)` | Downloads one regional raw `.osm.pbf` to temporary storage, filters nodes and assembled OSM areas by the shared tag rules, computes representative points, and saves a catalog release. The source PBF is discarded after the build. |
 | `tstorm_climo/catalog_storage.py` | `publish_catalog_to_s3(catalog_dir, bucket, prefix=)` | Optional boto3-backed publishing: uploads release files under unique keys, then updates a source/region-scoped `latest.json` pointer. Install with `uv sync --extra catalog-s3`. |
-| `tstorm_climo/summarize.py` | `place_summary`, `by_local_month`, `by_local_hour`, `scorecard`, `split_half_reliability` | Per-place climatology in local time. Default threshold 0.05 mm/h, shared with `summarize_grid`. No unit conversion — input is already mm/h. |
+| `tstorm_climo/gridded.py` | `build_gridded_artifact(places, start, end, output_dir)`, `load_gridded_artifact(directory)`, `GriddedArtifact`, `wet_hours(dataset, threshold=)`, `valid_hours(dataset)` | Gridded display store for the app's map views: the whole grid block the places sit on, one hour per step, as **Zarr V3 on local Icechunk**. Chunked along time (~744 h default) with the full block as the spatial chunk, so a windowed view spans one or two chunks. The store holds rates, not conclusions — wet-hours-per-node over any window and threshold is one reduce at query time (`NaN` never counts as wet; `valid_hours` shows how much data a node received). Icechunk versions each build, so a later refresh appends hours without losing the old view. Manifest sidecar mirrors the observation artifact's conventions. |
+| `tstorm_climo/summarize.py` | `prepare_observations`, `place_summary`, `by_local_month`, `by_local_hour`, `scorecard`, `split_half_reliability` | Per-place climatology in local time. Default threshold 0.05 mm/h, shared with `summarize_grid`. No unit conversion — input is already mm/h. `prepare_observations` joins the places, converts to local time, and marks the wet hours **once**, so a report does not repeat three full passes over the frame; the summary functions read from that prepared frame. Ties are broken on `place_key`, so the output order is reproducible. |
 | `tstorm_climo/provenance.py` | `build_metadata`, `write_metadata`, `format_caveats` | JSON sidecar recording archive, date range, threshold, reliability and the CC-BY / ODbL attribution. Makes a published number reproducible and keeps licence obligations in one place. |
 | `tstorm_climo/grid.py` | `Grid.from_dataset(ds)`, `Grid.locate`, `locate_places`, `cover_cells`, `bounds()`, `spacing_km`, `max_snap_km`; `GridNode`/`GridCell`/`FootprintCell` | Maps a place onto HRRR nodes using the archive's own 2-D lat/lon arrays, so no `pyproj`. `locate*` snap to the nearest node; `cover_cells` returns every node inside an OSM footprint via DuckDB `spatial`. `max_snap_factor` and `batch_nodes` are constructor keywords. |
-| `tstorm_climo/cli.py` | `build-catalog --region/--kind/--bbox/--output/--s3-bucket`, `build-observations --places/--start/--end/--output`, `rain-report ...`, `summarize ...`, `fetch-places ...` | argparse subcommands. `build-catalog` pulls a Geofabrik region (`--region` required); S3 publishing is optional. `build-observations` creates the reusable hourly rain artifact. `rain-report` writes a **derived summary**, not hourly observations. |
+| `tstorm_climo/cli.py` | `build-catalog --region/--kind/--bbox/--output/--s3-bucket`, `build-observations --places/--start/--end/--output`, `build-gridded --places/--start/--end/--output/--chunk-hours`, `rain-report --places|--artifact ...`, `summarize ...`, `fetch-places ...` | argparse subcommands. `build-catalog` pulls a Geofabrik region (`--region` required); S3 publishing is optional. `build-observations` creates the reusable hourly rain artifact. `build-gridded` creates the Icechunk display store for the app's map views. `rain-report` writes a **derived summary**, not hourly observations, and reads either the archive (`--places`) or a prepared artifact (`--artifact`). |
 
 Committed data:
 - `places_north_shore.csv` — 50 golf courses + 60 named beaches for the
@@ -146,11 +148,6 @@ present in a Cape Cod box), so this was **regional coverage, not a broken
 query** - verified by pulling the same box twice. LayerCake is now removed;
 see "LayerCake: removed" above.
 
-**Still open:** the Geofabrik PBF path can inspect raw regional OSM tags
-and geometry, but its beach coverage has never been benchmarked against
-the known 60 Overpass places. Keep the existing beach catalog until that
-comparison is done.
-
 ### Ski areas: tagging is fragmented, but curatable (measured)
 
 Winter areas are **not** tagged consistently. `leisure=ski_resort` is
@@ -204,7 +201,7 @@ checked-in **curation overlay** for corrections the tags cannot express
 
 Tooling: `uv` + Python 3.14, `pytest`, `ruff` (E/F/I/UP/B/SIM), `ty`.
 Declared dependencies: `dynamical-catalog`, `xarray`, `polars`, `pydantic`,
-`numpy`, `duckdb`, `httpx`, `tzfpy`, `osmium`, `boto3`. Deliberately NOT
+`numpy`, `duckdb`, `httpx`, `tzfpy`, `osmium`. Deliberately NOT
 used: GRIB2/cfgrib, runtime OSM fetches in the analysis path.
 
 - `numpy` is imported directly by `grid`, `extract`, `summarize`, `places`,
@@ -213,6 +210,12 @@ used: GRIB2/cfgrib, runtime OSM fetches in the analysis path.
 - `duckdb` is needed twice: `grid.cover_cells` uses its `spatial` extension
   for point-in-polygon, and `geofabrik` uses it for spatial joins.
 - `osmium` is Geofabrik-only; `boto3` is the optional `catalog-s3` extra.
+  It used to be listed in *both* the core dependencies and the extra,
+  which made the extra a no-op — the core install always had boto3, and
+  `uv sync --extra catalog-s3` installed nothing extra. `boto3` is now
+  in the extra only, matching the documented intent, and
+  `catalog_storage` imports it lazily so the core CLI still works and
+  names the extra if S3 publishing is asked for.
 
 Testing strategy: unit tests run on synthetic xarray datasets via an
 injected `opener`; no network in the fast test suite.
@@ -505,10 +508,6 @@ injected `opener`; no network in the fast test suite.
     - `rain-report` reads through `load_places` as well, so both it and
       `build-observations` accept a catalog parquet and average footprints.
       The printed caveat text was updated to match.
-    - **Still open:** re-run the North Shore leaderboard on footprint
-      sampling and compare against the point-sampled baseline. Filtering
-      `sampling == "point"` in a v2 artifact reproduces the old numbers
-      exactly, so that comparison is a filter rather than a rebuild.
 8. **Threshold sensitivity study.** Compare wet fractions across
    thresholds (0, 0.1, 0.5, 1 mm/h — see the units note in open
    questions) and against `categorical_rain_surface`, which may be a
@@ -538,10 +537,13 @@ injected `opener`; no network in the fast test suite.
     information end-to-end.
     Follow-up: add software/code version and assess completeness against the
     expected hourly timeline, since a missing timestamp entirely is not
-    currently counted in `valid_fraction`. `schema_version` is written but
-    never validated on read, so a consumer cannot yet tell a v1 bundle (no
-    sampling columns) from a v2 one; `summarize` synthesises the missing
-    columns, which is exact for v1 but would paper over a real gap later.
+    currently counted in `valid_fraction`. **`schema_version` is now
+    validated on read** — `load_observation_artifact` refuses a bundle
+    whose version this build does not read, and accepts a v1 bundle (no
+    sampling columns) by leaving the sampling table empty, which
+    `summarize` then reconstructs exactly from the anchor node. What is
+    still missing is the *code* version: the manifest records the dataset
+    and the schema, but not which build produced it.
     Start with one region and one
     Parquet file; partition by variable/year only if filtered reads need it.
     The hourly artifact currently stores the scalar `Place` snapshot used
@@ -574,6 +576,30 @@ injected `opener`; no network in the fast test suite.
     North Shore block remains small; no database or distributed cache is
     justified. Use Polars lazy scans or load the artifact once, then add
     caching only if measured app latency warrants it.
+    - **The serving path now exists.** `artifacts.load_observation_artifact`
+      reads a built artifact and checks its `schema_version` before
+      anything else, so an artifact from a newer build is refused rather
+      than misread. The observations are held as a **lazy scan**, so
+      opening an artifact reads nothing; `query.select_observations`
+      pushes a bounded selection (at most `MAX_SELECTED_PLACES` places)
+      into the plan, where Polars prunes it against Parquet row-group
+      statistics, then collects and joins the static per-place columns
+      back. `query.artifact_report` bundles the summary, monthly, and
+      hourly tables with the reliability figure, and
+      `query.build_wetness_summary` produces the one-row-per-place map.
+      `rain-report --artifact` exercises the same path from the CLI.
+      Nothing in it opens a network connection, so an app session costs
+      no archive reads.
+    - **Date-bound semantics are fixed and shared.** A date-only bound
+      covers the whole day, matching the extraction path's slice
+      behaviour, and a requested range is clamped to the artifact's
+      observed coverage so a request for years the artifact does not hold
+      returns the covered part rather than nothing.
+    - **Still open:** nothing yet *resolves* which artifact a server
+      should use. There is a `latest.json` pointer for catalog releases
+      but none for observation artifacts, and no config setting that
+      points a deployment at an artifact directory. Both are deployment
+      decisions rather than analysis ones.
 12. **Adapt to archive format changes.** dynamical.org keeps
     `analysis` (time-optimized), `analysis-virtual` (map-optimized), plus
     forecast and 18 h low-latency variants. Confirm which is best for
@@ -585,12 +611,81 @@ injected `opener`; no network in the fast test suite.
 
 ### Phase 4: Interactive marimo-studio app
 
-14. **Factor a reusable report/query function.** Accept observation data,
-    selected `place_key`/attraction kind, variable, date range, and any
-    supported summary options; return tables and plot-ready data. Keep it
-    independent of marimo and network I/O so the CLI, tests, and app share
-    the same analysis behavior.
-15. **Build the interactive view with marimo-studio.** Keep analysis cells
+#### Gridded display store: Icechunk (built)
+
+Map views need the grid, not a per-place table. `gridded.py` writes the
+places' whole grid block as one hourly `precipitation_mm_per_hour` array
+(Zarr V3) into an immutable local Icechunk store next to a
+`manifest.json` sidecar, mirroring the observation artifact's
+conventions:
+
+- **The block is the extraction block.** It comes from the same
+  `extract.sampling_cells`/`sampling_bounds` helpers as the per-place
+  artifacts, so one archive read can serve both formats.
+- **The store holds rates, not conclusions.** Wet hours per node are
+  counted at query time (`wet_hours`, threshold as an argument; NaN
+  never counts as wet, and `valid_hours` shows where data is missing),
+  so one store serves every window and threshold the app asks for at
+  North Shore scale.
+- **Time is the chunk axis** (~744 h default; the full block is one
+  spatial chunk), so a one-year wet-hours view touches a handful of
+  chunks. The dims carry the archive's global node indexes, so app
+  views can be joined to place anchors without a lookup table.
+- **Icechunk, not a flat Zarr directory**: a later refresh appends new
+  hours as a new commit and older views keep working.
+
+Not yet wired up (as of the first app version): the marimo app reads
+this store when `TSTORM_CLIMO_GRIDDED` is set and the `build-gridded`
+CLI subcommand builds it; the first real view is wet-hours-per-node for
+the store's last year.
+
+#### Deployment decisions (settled, not yet built)
+
+- **Container:** a plain, platform-agnostic Dockerfile running
+  `marimo run` and listening on `$PORT`. No platform-specific manifest
+  (no `fly.toml`, no `render.yaml`), so the same image runs on
+  Fly/Render/Railway/ECS/Kubernetes or a plain VPS with Compose.
+- **Artifact delivery: pull from S3 at startup.** Observation artifacts
+  get the release treatment the catalog releases already have —
+  immutable keys plus a `latest.json` pointer — and the server
+  downloads the resolved artifact when it boots. This keeps the image
+  small and lets data be refreshed without a redeploy. It needs
+  `publish_observations_to_s3` and a reader for the pointer, neither of
+  which exists yet.
+- **Not decided yet:** the container's memory limit. The full
+  multi-year report peaks around 5 GB, so the limit has to be set
+  deliberately rather than left at a platform default.
+
+14. ~~**Factor a reusable report/query function.**~~ **DONE**
+    (`tstorm_climo/query.py`). `select_observations` takes observation data
+    plus a selected variable, date range, attraction kind, and place key
+    and returns the filtered observations; `artifact_report` returns the
+    per-place summary, the monthly and local-hour climatologies, and the
+    ranking reliability for the selected range and threshold. It is
+    independent of marimo and of network I/O, so the CLI, the tests, and
+    the app share the same analysis behaviour — `rain-report --artifact`
+    and the app call the same code.
+    - The one thing it deliberately does *not* do is decide **which**
+      artifact to serve. That is a deployment decision, and it is still
+      open.
+15. **Build the interactive view with marimo-studio.** **First version
+    built** (`app/rain_app.py`): attraction kind, place multiselect
+    (capped at `MAX_SELECTED_PLACES`), wet threshold, and a date range
+    bounded by the artifact's own coverage; the leaderboard table with
+    tie flags and the split-half reliability banner, monthly and
+    local-hour wet-frequency charts for a focus place, and — when
+    `TSTORM_CLIMO_GRIDDED` is set — the wet-hours-per-node map for the
+    store's last year, sourced from the Icechunk store rather than the
+    per-place Parquet. The app reads the artifact lazily per query via
+    `query.artifact_report`; no cell opens a network connection.
+    Artifact resolution is by environment variable
+    (`TSTORM_CLIMO_ARTIFACT`, `TSTORM_CLIMO_GRIDDED`), which settles
+    the deployment question "which artifact does a server serve" at
+    initial scale; `latest.json` publication for observation artifacts
+    and container hosting remain future work. Remaining polish:
+    place-outline overlays, comparing several places side by side, and
+    configurable map windows (currently store-coverage-minus-a-year).
+    Keep analysis cells
     and reusable Python functions in the notebook/package; put presentation
     code in a separate Studio view. Start with the simplest frontend that
     meets the need (plain HTML is sufficient); use React/Svelte only if the
@@ -628,6 +723,88 @@ injected `opener`; no network in the fast test suite.
     advance `latest` after validation and reload/restart the app cleanly;
     do not mix catalog files within a session. Keep previous releases for
     rollback and reproducibility, and keep OSM and HRRR attribution visible.
+    - **Row order is now reproducible.** Grouping does not promise a row
+      order, so sorting the summary on the wet fraction alone shuffled
+      equally-wet places from one run to the next — the leaderboard
+      changed between runs with identical numbers. `place_summary` and
+      `scorecard` now break ties on `place_key`, so the same artifact
+      always prints in the same order. Verified against the full
+      2018–2025 North Shore artifact: four consecutive runs give
+      byte-identical tables.
+
+### Measured: what serving costs
+
+Measured on the full North Shore artifact (110 places, 2018-01-01 to
+2025-12-31, 7,714,080 observation rows, 31 MB of Parquet), on the
+development machine, one process per scenario.
+
+The artifact is read as a **lazy scan**, so the filters and the
+projection are pushed into the Parquet reader and the rows that cannot
+match are never read:
+
+| Scenario | Report time | Peak RSS |
+|---|---|---|
+| Load the artifact, no query yet | 0.01 s | 0.15 GB |
+| All 110 places, 8 years | 2.6 s | 4.8 GB |
+| 50 golf courses, 8 years | 1.1 s | 2.4 GB |
+| 50 golf courses, one June | 0.3 s | 0.35 GB |
+| 50 golf courses, one day | 0.2 s | 0.30 GB |
+
+Three things follow, and they shape the hosting plan:
+
+- **The server does not hold the artifact.** Loading it costs 0.15 GB
+  and reads nothing; each query reads only what it needs. An idle
+  server between requests sits at the interpreter's footprint rather
+  than at 1.3 GB. Before the lazy scan, the artifact was resident from
+  the moment it was opened.
+- **Memory is the binding constraint, not latency.** The largest query
+  — everything, eight years — still peaks around 4.8 GB, because that
+  selection genuinely is most of the data. A typical query is far
+  cheaper: a June view of the golf courses peaks at 0.35 GB. A
+  container has to be sized for the largest query the app allows, or
+  the app has to bound it.
+- **Preparing the frame once matters.** Joining the place metadata,
+  converting to local time, and marking the wet hours were each a full
+  pass over the frame, and a report wants all three. Doing them once
+  (`summarize.prepare_observations`) cut the eight-year report from
+  4.3 s to 2.6 s and the peak from 5.6 GB to 5.2 GB. The numbers are
+  unchanged; only the work done to reach them.
+
+Two things were measured and are **not** worth doing, so they are
+recorded here rather than repeated:
+
+- **A narrower frame would help further.** The observations carry eight
+  per-place-constant columns (`y_index`, `x_index`, `grid_lat`,
+  `grid_lon`, `snap_distance_km`, `sampling`, `n_cells`,
+  `sampling_key`) repeated once per hour per place. The same facts are
+  110 rows × 10 cols in the metadata tables. Dropping them from the
+  frame and rejoining them onto the *result* rather than onto the
+  observations would cut the peak further — but the anchor node and
+  the sampled node set are different facts, and the two tables do not
+  carry the same columns.
+- **Aggregating inside each timezone partition** to avoid concatenating
+  the converted frame was measured at 1,062 MB against 851 MB for the
+  straightforward version: `partition_by` copies the frame either way,
+  so the saving does not exist.
+
+### Why a lazy scan rather than a query engine
+
+The alternatives were measured rather than assumed:
+
+- **DuckDB reading the object in place** is the standard "query the
+  lake" pattern (as Athena, BigQuery, and Trino do), and DuckDB is
+  already a dependency. But converting its result back to Polars
+  requires `pyarrow`, which is not installed — and moving the
+  aggregation into SQL would mean a second implementation of the
+  analysis semantics, which is exactly what the CLI, the tests, and
+  the app are meant to share.
+- **Polars' lazy scan** does the same thing with no new dependency and
+  no rewrite: the filters go into the Parquet reader, and the analysis
+  layer is unchanged.
+
+The lazy scan is the better fit here, and it is also what lets the
+artifact sit on S3: `pl.scan_parquet("s3://...")` reads the object
+directly, with the same pushdown, and no local copy is needed.
 
 ### Phase 5: Generalizations
 

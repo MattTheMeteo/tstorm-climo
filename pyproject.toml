@@ -46,8 +46,16 @@ dev = [
     "zarr>=3.4.2",
 ]
 
+# The FastAPI backend behind the web app. Kept out of the core CLI; the
+# hosted service and the API tests both run against this group.
+web = [
+    "fastapi>=0.115.12",
+    "uvicorn>=0.34.0",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 88
@@ -60,7 +68,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python-version = "3.12"
 
 [tool.ty.src]
-include = ["src", "tests", "scripts"]
+include = ["src", "tests", "scripts", "apps"]
 
 [tool.coverage.run]
 source = ["src/tstorm_climo"]

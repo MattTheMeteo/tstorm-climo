@@ -16,7 +16,9 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --frozen
+        # The web group is what the hosted service and the API tests run on,
+        # so its pins are resolved here too.
+        run: uv sync --frozen --group web
 
       - name: Tests
         run: uv run pytest --cov=src/tstorm_climo --cov-report=term-missing

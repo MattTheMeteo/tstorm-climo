@@ -10,23 +10,39 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
+from numbers import Integral, Real
 from typing import Any
 
 import polars as pl
 import xarray as xr
+from pydantic import TypeAdapter
+from shapely import from_wkb
+from shapely.geometry import mapping
 
 from tstorm_climo.gridded import valid_hours, wet_hours
 from tstorm_climo.places import Place
 
-from .schemas import PlaceResponse, PointGeometry
+from .schemas import (
+    GeoJSONGeometry,
+    PlaceResponse,
+    PointGeometry,
+    WetnessFeature,
+    WetnessProperties,
+    WetnessResponse,
+)
+
+_GEOMETRY_ADAPTER = TypeAdapter(GeoJSONGeometry)
 
 
 def json_safe(value: Any) -> Any:
     """Recursively make a value JSON-serializable (NaN/Inf -> None)."""
-    if isinstance(value, float):
-        if math.isnan(value) or math.isinf(value):
-            return None
+    if isinstance(value, bool):
         return value
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else None
     if isinstance(value, dict):
         return {key: json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -45,7 +61,12 @@ def iso(value: datetime | None) -> str | None:
 
 
 def place_record(place: Place) -> PlaceResponse:
-    """A place as the API exposes it: scalar fields plus its point geometry."""
+    """A place as the API exposes it, with a point fallback if no footprint exists."""
+    geometry: GeoJSONGeometry = (
+        PointGeometry(coordinates=(place.lon, place.lat))
+        if place.geometry_wkb is None
+        else _GEOMETRY_ADAPTER.validate_python(mapping(from_wkb(place.geometry_wkb)))
+    )
     return PlaceResponse(
         place_key=place.place_key,
         name=place.display_name,
@@ -53,13 +74,13 @@ def place_record(place: Place) -> PlaceResponse:
         lat=place.lat,
         lon=place.lon,
         timezone=place.timezone,
-        geometry=PointGeometry(coordinates=(place.lon, place.lat)),
+        geometry=geometry,
     )
 
 
 def wetness_geojson(
     dataset: xr.Dataset, *, start: str, end: str, threshold: float
-) -> dict[str, Any]:
+) -> WetnessResponse:
     """The wet-hours map as a GeoJSON FeatureCollection of grid nodes.
 
     One Point feature per node, with ``wet_hours``, ``valid_hours`` and the
@@ -75,24 +96,18 @@ def wetness_geojson(
     wet_values = wet.values.ravel()
     valid_values = valid.values.ravel()
 
-    features: list[dict[str, Any]] = []
+    features: list[WetnessFeature] = []
     for lon, lat, wet_h, valid_h in zip(
         longitudes, latitudes, wet_values, valid_values, strict=True
     ):
         features.append(
-            {
-                "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [float(lon), float(lat)],
-                },
-                "properties": {
-                    "wet_hours": int(wet_h),
-                    "valid_hours": int(valid_h),
-                    "wet_fraction": (
-                        float(wet_h) / float(valid_h) if valid_h else None
-                    ),
-                },
-            }
+            WetnessFeature(
+                geometry=PointGeometry(coordinates=(float(lon), float(lat))),
+                properties=WetnessProperties(
+                    wet_hours=int(wet_h),
+                    valid_hours=int(valid_h),
+                    wet_fraction=(float(wet_h) / float(valid_h) if valid_h else None),
+                ),
+            )
         )
-    return {"type": "FeatureCollection", "features": features}
+    return WetnessResponse(features=features)

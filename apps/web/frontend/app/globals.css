@@ -56,11 +56,28 @@ h1 {
 
 table.leaderboard {
   width: 100%;
+  min-width: 680px;
   border-collapse: collapse;
   background: #fff;
   border: 1px solid #e5e7eb;
   border-radius: 0.5rem;
   overflow: hidden;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 table.leaderboard th,
@@ -126,4 +143,18 @@ table.leaderboard th {
   border: 1px solid #e5e7eb;
   border-radius: 999px;
   cursor: pointer;
+}
+
+.place-control {
+  min-width: 0;
+  margin: 0 0 1rem;
+  padding: 0;
+  border: 0;
+}
+
+.place-control legend {
+  margin-bottom: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #374151;
 }

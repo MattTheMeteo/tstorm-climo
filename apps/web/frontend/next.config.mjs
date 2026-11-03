@@ -1,9 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // The map libraries ship untranspiled ESM; let Next transform them.
+  // React integrations ship ESM that Next needs to transform. MapLibre 6
+  // bundles normally; keeping it out avoids Turbopack treating its runtime
+  // worker-URL import fallback as a build-time module dependency.
   transpilePackages: [
-    "maplibre-gl",
     "react-map-gl",
     "@deck.gl/react",
     "@deck.gl/layers",

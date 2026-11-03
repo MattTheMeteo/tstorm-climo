@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from tstorm_climo.artifacts import MAX_SELECTED_PLACES
 from tstorm_climo.thresholds import DEFAULT_WET_THRESHOLD_MM_PER_HOUR
+
+Longitude = Annotated[float, Field(ge=-180, le=180)]
+Latitude = Annotated[float, Field(ge=-90, le=90)]
+Position = tuple[Longitude, Latitude]
 
 
 class ReportRequest(BaseModel):
@@ -36,7 +40,27 @@ class PointGeometry(BaseModel):
     """RFC 7946 WGS84 point geometry."""
 
     type: Literal["Point"] = "Point"
-    coordinates: tuple[float, float]
+    coordinates: tuple[Longitude, Latitude]
+
+
+class PolygonGeometry(BaseModel):
+    """RFC 7946 polygon footprint geometry."""
+
+    type: Literal["Polygon"]
+    coordinates: list[list[Position]]
+
+
+class MultiPolygonGeometry(BaseModel):
+    """RFC 7946 multipolygon footprint geometry."""
+
+    type: Literal["MultiPolygon"]
+    coordinates: list[list[list[Position]]]
+
+
+GeoJSONGeometry = Annotated[
+    PointGeometry | PolygonGeometry | MultiPolygonGeometry,
+    Field(discriminator="type"),
+]
 
 
 class PlaceResponse(BaseModel):
@@ -45,10 +69,10 @@ class PlaceResponse(BaseModel):
     place_key: str
     name: str
     kind: str
-    lat: float
-    lon: float
+    lat: Latitude
+    lon: Longitude
     timezone: str
-    geometry: PointGeometry
+    geometry: GeoJSONGeometry
 
 
 class CoverageResponse(BaseModel):
@@ -69,40 +93,40 @@ class SummaryResponse(BaseModel):
     place_key: str
     name: str
     kind: str
-    wet_fraction: float | None
-    wet_hours: int
-    valid_hours: int
-    rain_mm: float | None
-    coverage: float | None
+    wet_fraction: Annotated[float, Field(ge=0, le=1)] | None
+    wet_hours: Annotated[int, Field(ge=0)]
+    valid_hours: Annotated[int, Field(ge=0)]
+    rain_mm: Annotated[float, Field(ge=0)] | None
+    coverage: Annotated[float, Field(ge=0, le=1)] | None
     tied: bool
-    cell_places: int
-    rank: int
+    cell_places: Annotated[int, Field(ge=1)]
+    rank: Annotated[int, Field(ge=1)]
 
 
 class MonthlyResponse(BaseModel):
     """Wetness grouped by place and local calendar month."""
 
     place_key: str
-    local_month: int
+    local_month: Annotated[int, Field(ge=1, le=12)]
     name: str
     kind: str
-    valid_hours: int
-    wet_hours: int
-    rain_mm: float | None
-    wet_fraction: float | None
+    valid_hours: Annotated[int, Field(ge=0)]
+    wet_hours: Annotated[int, Field(ge=0)]
+    rain_mm: Annotated[float, Field(ge=0)] | None
+    wet_fraction: Annotated[float, Field(ge=0, le=1)] | None
 
 
 class HourlyResponse(BaseModel):
     """Wetness grouped by place and local hour of day."""
 
     place_key: str
-    local_hour: int
+    local_hour: Annotated[int, Field(ge=0, le=23)]
     name: str
     kind: str
-    hours_observed: int
-    wet_hours: int
-    rain_mm: float | None
-    wet_fraction: float | None
+    hours_observed: Annotated[int, Field(ge=0)]
+    wet_hours: Annotated[int, Field(ge=0)]
+    rain_mm: Annotated[float, Field(ge=0)] | None
+    wet_fraction: Annotated[float, Field(ge=0, le=1)] | None
 
 
 class ReportResponse(BaseModel):
@@ -111,7 +135,7 @@ class ReportResponse(BaseModel):
     summary: list[SummaryResponse]
     monthly: list[MonthlyResponse]
     hourly: list[HourlyResponse]
-    reliability: float | None
+    reliability: Annotated[float, Field(ge=-1, le=1)] | None
     start: str | None
     end: str | None
     places: list[PlaceResponse]
@@ -120,9 +144,9 @@ class ReportResponse(BaseModel):
 class WetnessProperties(BaseModel):
     """Wet and valid counts for a grid node."""
 
-    wet_hours: int
-    valid_hours: int
-    wet_fraction: float | None
+    wet_hours: Annotated[int, Field(ge=0)]
+    valid_hours: Annotated[int, Field(ge=0)]
+    wet_fraction: Annotated[float, Field(ge=0, le=1)] | None
 
 
 class WetnessFeature(BaseModel):

@@ -48,9 +48,10 @@ dev = [
 ]
 
 # The FastAPI backend behind the web app. Kept out of the core CLI; the
-# hosted service and the API tests both run against this group.
+# service and API tests use this group, including WKB-to-GeoJSON conversion.
 web = [
     "fastapi>=0.115.12",
+    "shapely>=2.0",
     "uvicorn>=0.34.0",
 ]
 

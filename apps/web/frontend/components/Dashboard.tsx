@@ -13,6 +13,7 @@ import type {
   Report,
   WetnessGeoJSON,
 } from "@/lib/types";
+import { selectionAfterToggle } from "@/lib/presentation";
 import Charts from "./Charts";
 import Leaderboard from "./Leaderboard";
 import WetnessMap from "./WetnessMap";
@@ -32,41 +33,62 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    getCoverage()
+    const controller = new AbortController();
+    getCoverage({ signal: controller.signal })
       .then((cov) => {
         setCoverage(cov);
         setStart(cov.observed_start?.slice(0, 10) ?? "");
         setEnd(cov.observed_end?.slice(0, 10) ?? "");
       })
-      .catch((err) => setError(String(err)));
-    getPlaces()
+      .catch((err: unknown) => {
+        if (!controller.signal.aborted) setError(String(err));
+      });
+    getPlaces(undefined, { signal: controller.signal })
       .then((res) => {
         setPlaces(res.places);
         setSelectedKeys(res.places.slice(0, MAX_PLACES).map((p) => p.place_key));
       })
-      .catch((err) => setError(String(err)));
+      .catch((err: unknown) => {
+        if (!controller.signal.aborted) setError(String(err));
+      });
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
     if (!coverage?.gridded) return;
-    getWetness({ threshold })
+    const controller = new AbortController();
+    getWetness(
+      { start: start || undefined, end: end || undefined, threshold },
+      { signal: controller.signal },
+    )
       .then(setWetness)
-      .catch((err) => setError(String(err)));
-  }, [coverage?.gridded, threshold]);
+      .catch((err: unknown) => {
+        if (!controller.signal.aborted) setError(String(err));
+      });
+    return () => controller.abort();
+  }, [coverage?.gridded, start, end, threshold]);
 
   useEffect(() => {
     if (selectedKeys.length === 0) {
       setReport(null);
       return;
     }
-    postReport({
-      place_keys: selectedKeys,
-      start: start || undefined,
-      end: end || undefined,
-      threshold_mm_per_hour: threshold,
-    })
+    setReport(null);
+    const controller = new AbortController();
+    postReport(
+      {
+        place_keys: selectedKeys,
+        start: start || undefined,
+        end: end || undefined,
+        threshold_mm_per_hour: threshold,
+      },
+      { signal: controller.signal },
+    )
       .then(setReport)
-      .catch((err) => setError(String(err)));
+      .catch((err: unknown) => {
+        if (!controller.signal.aborted) setError(String(err));
+      });
+    return () => controller.abort();
   }, [selectedKeys, start, end, threshold]);
 
   const kinds = useMemo(
@@ -95,9 +117,7 @@ export default function Dashboard() {
   );
 
   const togglePlace = useCallback((key: string) => {
-    setSelectedKeys((keys) =>
-      keys.includes(key) ? keys.filter((k) => k !== key) : [...keys, key],
-    );
+    setSelectedKeys((keys) => selectionAfterToggle(keys, key, MAX_PLACES));
   }, []);
 
   return (
@@ -146,6 +166,8 @@ export default function Dashboard() {
             id="start"
             type="date"
             value={start}
+            min={coverage?.observed_start?.slice(0, 10) ?? undefined}
+            max={end || coverage?.observed_end?.slice(0, 10) || undefined}
             onChange={(e) => setStart(e.target.value)}
           />
         </div>
@@ -156,26 +178,32 @@ export default function Dashboard() {
             id="end"
             type="date"
             value={end}
+            min={start || coverage?.observed_start?.slice(0, 10) || undefined}
+            max={coverage?.observed_end?.slice(0, 10) ?? undefined}
             onChange={(e) => setEnd(e.target.value)}
           />
         </div>
       </div>
 
-      <div className="control" style={{ marginBottom: "1rem" }}>
-        <label>Places ({selectedKeys.length} selected)</label>
+      <fieldset className="control place-control">
+        <legend>Places ({selectedKeys.length} selected, up to {MAX_PLACES})</legend>
         <div className="place-select">
           {visiblePlaces.map((place) => (
             <label key={place.place_key}>
               <input
                 type="checkbox"
                 checked={selectedKeys.includes(place.place_key)}
+                disabled={
+                  !selectedKeys.includes(place.place_key) &&
+                  selectedKeys.length >= MAX_PLACES
+                }
                 onChange={() => togglePlace(place.place_key)}
               />
               {place.name}
             </label>
           ))}
         </div>
-      </div>
+      </fieldset>
 
       {report && <Leaderboard report={report} />}
       {report && <Charts report={report} />}

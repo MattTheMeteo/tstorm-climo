@@ -11,56 +11,26 @@ import {
   YAxis,
 } from "recharts";
 import type { Report } from "@/lib/types";
-
-const MONTHS = [
-  "Jan",
-  "Feb",
-  "Mar",
-  "Apr",
-  "May",
-  "Jun",
-  "Jul",
-  "Aug",
-  "Sep",
-  "Oct",
-  "Nov",
-  "Dec",
-];
+import {
+  defaultChartPlace,
+  hourlyChartData,
+  monthlyChartData,
+} from "@/lib/presentation";
 
 export default function Charts({ report }: { report: Report }) {
-  const wettest = useMemo(
-    () =>
-      [...report.summary].sort(
-        (a, b) => (b.wet_fraction ?? 0) - (a.wet_fraction ?? 0),
-      )[0],
-    [report.summary],
-  );
-
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const focus =
     focusKey && report.places.some((p) => p.place_key === focusKey)
       ? focusKey
-      : (wettest?.place_key ?? report.places[0]?.place_key ?? "");
+      : defaultChartPlace(report.summary, report.places);
 
   const monthlyData = useMemo(
-    () =>
-      report.monthly
-        .filter((row) => row.place_key === focus)
-        .map((row) => ({
-          label: MONTHS[row.local_month - 1],
-          wet_fraction: row.wet_fraction ?? 0,
-        })),
+    () => monthlyChartData(report.monthly, focus),
     [report.monthly, focus],
   );
 
   const hourlyData = useMemo(
-    () =>
-      report.hourly
-        .filter((row) => row.place_key === focus)
-        .map((row) => ({
-          label: row.local_hour,
-          wet_fraction: row.wet_fraction ?? 0,
-        })),
+    () => hourlyChartData(report.hourly, focus),
     [report.hourly, focus],
   );
 

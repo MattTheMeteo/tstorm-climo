@@ -80,7 +80,8 @@ def report(artifacts: ArtifactsDep, body: ReportRequest) -> ReportResponse:
     keys = list(dict.fromkeys(body.place_keys))
     if any(key not in known for key in keys):
         raise HTTPException(
-            status_code=404, detail="none of the requested places are in the artifact"
+            status_code=404,
+            detail="one or more requested places are not in the artifact",
         )
     result = artifact_report(
         artifacts.observation,
@@ -132,11 +133,9 @@ def wetness(
         raise HTTPException(
             status_code=404, detail="the gridded artifact has no observed coverage"
         )
-    return WetnessResponse.model_validate(
-        wetness_geojson(
-            store.dataset,
-            start=str(window_start),
-            end=str(window_end),
-            threshold=threshold,
-        )
+    return wetness_geojson(
+        store.dataset,
+        start=str(window_start),
+        end=str(window_end),
+        threshold=threshold,
     )

@@ -2,34 +2,30 @@
 
 import { useMemo } from "react";
 import DeckGL from "@deck.gl/react";
-import { ScatterplotLayer } from "@deck.gl/layers";
+import { GeoJsonLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { setWorkerUrl } from "maplibre-gl";
 import Map from "react-map-gl/maplibre";
 import type { PlaceRecord, WetnessGeoJSON } from "@/lib/types";
+import {
+  colorFor,
+  nodeDataFromWetness,
+  outlineFeaturesFromPlaces,
+  placeCoordinates,
+  radiusForWetHours,
+  tooltipTextFor,
+  type NodeDatum,
+  type PlaceOutlineFeature,
+  type Rgba,
+} from "@/lib/map";
 
 // A free, key-less basemap (Carto Positron).
 const MAP_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 
-type Rgba = [number, number, number, number];
+setWorkerUrl(
+  new URL("maplibre-gl/dist/maplibre-gl-worker.mjs", import.meta.url).toString(),
+);
 
 const PLACE_COLOR: Rgba = [17, 24, 39, 255];
-
-interface NodeDatum {
-  position: [number, number];
-  wetHours: number;
-  wetFraction: number | null;
-}
-
-function colorFor(wetFraction: number | null): Rgba {
-  if (wetFraction == null) return [200, 200, 200, 140];
-  // Approximate viridis: dark blue -> yellow as the wet share grows.
-  const t = Math.min(wetFraction / 0.2, 1);
-  return [
-    Math.round(68 + t * (253 - 68)),
-    Math.round(1 + t * (231 - 1)),
-    Math.round(84 + t * (37 - 84)),
-    230,
-  ];
-}
 
 export default function WetnessMap({
   wetness,
@@ -39,13 +35,12 @@ export default function WetnessMap({
   places: PlaceRecord[];
 }) {
   const nodeData: NodeDatum[] = useMemo(
-    () =>
-      (wetness?.features ?? []).map((feature) => ({
-        position: feature.geometry.coordinates,
-        wetHours: feature.properties.wet_hours,
-        wetFraction: feature.properties.wet_fraction,
-      })),
+    () => nodeDataFromWetness(wetness),
     [wetness],
+  );
+  const placeOutlines = useMemo(
+    () => outlineFeaturesFromPlaces(places),
+    [places],
   );
 
   const initialViewState = useMemo(() => {
@@ -68,14 +63,24 @@ export default function WetnessMap({
       data: nodeData,
       getPosition: (d) => d.position,
       getFillColor: (d) => colorFor(d.wetFraction),
-      getRadius: (d) => 4 + Math.min(d.wetHours, 24),
+      getRadius: (d) => radiusForWetHours(d.wetHours),
       radiusUnits: "pixels",
+      pickable: true,
+    }),
+    new GeoJsonLayer<PlaceOutlineFeature["properties"]>({
+      id: "place-footprints",
+      data: placeOutlines,
+      filled: false,
+      stroked: true,
+      getLineColor: PLACE_COLOR,
+      lineWidthUnits: "pixels",
+      lineWidthMinPixels: 2,
       pickable: true,
     }),
     new ScatterplotLayer<PlaceRecord>({
       id: "places",
       data: places,
-      getPosition: (d) => [d.lon, d.lat],
+      getPosition: placeCoordinates,
       getFillColor: PLACE_COLOR,
       getRadius: 5,
       radiusUnits: "pixels",
@@ -92,17 +97,8 @@ export default function WetnessMap({
           controller
           layers={layers}
           getTooltip={({ object }) => {
-            if (!object) return null;
-            if ("wetHours" in object) {
-              const node = object as NodeDatum;
-              const share =
-                node.wetFraction != null
-                  ? ` (${(node.wetFraction * 100).toFixed(1)}%)`
-                  : "";
-              return { text: `${node.wetHours} wet hours${share}` };
-            }
-            const place = object as PlaceRecord;
-            return { text: `${place.name} · ${place.kind}` };
+            const text = tooltipTextFor(object);
+            return text === null ? null : { text };
           }}
         >
           <Map mapStyle={MAP_STYLE} />

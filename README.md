@@ -129,9 +129,10 @@ of grid nodes get identical numbers and are marked `tied`.
 
 ### Running the app
 
-The web app serves views from built artifacts — it reads no archive and
-no network while running. The analysis library builds the artifacts; the
-FastAPI backend serves them to the Next.js frontend (see PLAN.md Phase 6).
+The FastAPI service reads prepared artifacts only; it does not fetch HRRR
+or OpenStreetMap data while serving requests. The browser map loads its
+Carto Positron basemap separately. The analysis library builds the artifacts;
+the backend serves them to the Next.js frontend (see PLAN.md Phase 6).
 
 ```sh
 uv run tstorm-climo build-observations \
@@ -156,16 +157,50 @@ about a month. For a quick look without building anything real:
 uv run python scripts/demo_artifact.py   # network-free synthetic pair
 ```
 
+To run the local app against those demo artifacts, use one terminal for the
+API and another for Next.js:
+
+```sh
+export TSTORM_CLIMO_ARTIFACT="artifacts/demo/observations"
+export TSTORM_CLIMO_GRIDDED="artifacts/demo/gridded"
+uv run --group web uvicorn apps.web.backend.main:app --reload
+```
+
+```sh
+cd apps/web/frontend
+npm ci
+cp .env.local.example .env.local  # set NEXT_PUBLIC_API_BASE if needed
+npm run dev
+```
+
+The frontend requires Node.js 22.12 or newer.
+
+The API's default CORS allow-list is limited to the local Next.js origins.
+Set `TSTORM_CLIMO_CORS_ORIGINS` to a comma-separated list of exact frontend
+origins for a deployed frontend; do not leave a public deployment at `*`.
+
 ## Development checks
 
 ```sh
-uv run pytest              # run the test suite
-uv run ruff check          # lint
-uv run ruff format --check # style
-uv run ty check            # type check
+uv run ruff check
+uv run ruff format --check
+uv run ty check
+uv run pytest -q --cov=src/tstorm_climo --cov=apps.web.backend --cov-report=term-missing
+
+cd apps/web/frontend
+npm ci
+npm run typecheck
+npm test
+npm run build
+npm audit
 ```
 
-CI runs all four plus a package build.
+CI runs the Python checks and the frontend checks in separate jobs on every
+push and pull request. The frontend suite uses Vitest, jsdom, and Testing
+Library: it covers API request construction and response validation,
+ranking/reliability presentation, chart data shaping, wetness-map logic, and
+component rendering without a live backend, browser driver, HRRR, or basemap
+requests.
 
 ## Status
 
@@ -173,14 +208,15 @@ Implemented: HRRR data access, Geofabrik place-catalog builds, OSM place
 fetching, grid mapping, footprint and point sampling, per-place rain
 extraction and summaries, the `rain-report` CLI, reusable hourly rain
 Parquet artifacts, and a gridded display store (Zarr V3 on Icechunk) with
-its `build-gridded` CLI. The web application — a **FastAPI** backend over
-the existing query/gridded functions plus a **Next.js + TypeScript**
-frontend with **MapLibre GL JS + Deck.gl** maps — is under construction
-(see PLAN.md Phase 6); the earlier marimo prototype (`app/rain_app.py`)
-has been retired. A hosted deployment (artifact S3 publication,
-`latest.json` pointer, container) is not yet built. The app calculates in
-response to user choices from prepared artifacts, not by fetching HRRR or
-Overpass data on each interaction.
+its `build-gridded` CLI. The first web app is implemented: a **FastAPI**
+backend over the existing query/gridded functions and a **Next.js 16 +
+TypeScript** frontend with **MapLibre GL JS + Deck.gl** maps, charts, and a
+reliability-first leaderboard. Catalog footprint geometries are delivered
+and drawn as GeoJSON outlines where available. Backend and frontend behavior
+are covered by automated tests and CI. A hosted deployment (artifact S3
+publication, `latest.json` pointer, container) is not yet built. The app
+calculates in response to user choices from prepared artifacts, not by
+fetching HRRR or Overpass data on each interaction.
 
 Pipeline: places (OSM via Overpass as CSV, or a Geofabrik catalog with
 geometry) → `Grid` maps each place to its HRRR nodes — every node its

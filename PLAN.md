@@ -1,10 +1,19 @@
 # PLAN.md
 
 Roadmap and design notes for `tstorm-climo`: a tool for building weather
-climatologies from NWP analysis data and serving them through an interactive,
-server-side marimo app. Users should be able to choose an attraction (for
-example, a golf course, beach, or ski area), a weather variable, and a
-historical period.
+climatologies from NWP analysis data and serving them through a web
+application. Users should be able to choose an attraction (for example, a
+golf course, beach, or ski area), a weather variable, and a historical
+period.
+
+**Product direction (2026-11-02).** This is the first app of several. The
+analysis lives in the reusable `tstorm_climo` package, which stays free of
+web and UI dependencies; each app is a thin layer over it. The user-facing
+product is a proper web application — a **FastAPI** backend serving the
+existing `query.py`/`gridded.py`/`summarize.py` results as JSON and GeoJSON,
+and a **Next.js + TypeScript** frontend with **MapLibre GL JS + Deck.gl**
+for the map and a charting library for the time series. The marimo
+prototype (`app/rain_app.py`) is retired; see Phase 6.
 
 ## Current state
 
@@ -62,7 +71,7 @@ already caused one wrong threshold in this project. So:
 | module | what exists | notes |
 | --- | --- | --- |
 | `tstorm_climo/osm.py` | `KIND_TAGS`, `build_query(bbox, kinds)`, `run_query(query)` | Overpass API via **httpx**. Retains a descriptive User-Agent, retries on both HTTP statuses and transport errors, and always sets a request timeout. **Retained for small ad-hoc bbox exploration only** — see the place-catalog pull below, which supersedes it for bulk extraction. |
-| `tstorm_climo/places.py` | `Place` (pydantic), `classify`, `from_overpass`, `deduplicate`, `haversine_km`, `to_polars`, `save_csv`, `load_csv` | `Place.place_key` is the stable source-qualified OSM identity (`osm:{type}:{id}`). Ways/relations currently use Overpass centers and their full geometry is not retained; nodes use their position. Kind inferred from the element's own tags (Overpass does not say which selector matched). Dedupe collapses same-named places within 1 km (node+way duplicates) while keeping geographically distinct same-named places. |
+| `tstorm_climo/places.py` | `Place` (pydantic), `classify`, `from_overpass`, `deduplicate`, `haversine_km`, `to_polars`, `save_csv`, `load_csv`, `load_places`, `places_from_frame` | `Place.place_key` is the stable source-qualified OSM identity (`osm:{type}:{id}`). `load_places` reads either an Overpass CSV or a catalog `places.parquet` (preserving `geometry_wkb`). Ways/relations from Overpass use centers and omit full geometry; nodes use their position. Kind inferred from the element's own tags (Overpass does not say which selector matched). Dedupe collapses same-named places within 1 km (node+way duplicates) while keeping geographically distinct same-named places. |
 | `tstorm_climo/climatology.py` | `summarize_grid(precipitation)` | Per hourly analysis step, counts CONUS-wide grid points above a threshold (default 0.05 mm/h). Takes an **already-loaded** dataset — I/O lives in `hrrr.load_precipitation`. Coarse-grained (whole dataset, no spatial subset); a global sanity check, not a per-place result. |
 | `tstorm_climo/extract.py` | `extract_series(places, start, end, grid=, opener=)`, `sampling_cells(grid, places)`, `sampling_frame(places, sampling)` | Long-format per-place hourly series (`place_key, time, precipitation_mm_per_hour, valid, y_index, x_index, grid_lat, grid_lon, snap_distance_km, tz_name, sampling, n_cells, sampling_key`). `place_key` is independent of input order; summaries join by key. One contiguous block read, then gather in memory. Slices **before** converting units. Sorted by input place order, then time; the time column resets per place and is not globally sorted. `y_index`/`x_index`/`grid_lat`/`grid_lon`/`snap_distance_km` describe the place's **anchor** (nearest node to its representative point) and are not the nodes that were averaged; `n_cells` and `sampling_key` say what was, and `sampling_frame` holds the full node list. `sampling_cells` is a pure function of grid + places with no archive read, so callers can get the footprint without re-extracting. |
 | `tstorm_climo/artifacts.py` | `build_hourly_observation_artifact(places, start, end, output_dir)`, `load_observation_artifact(directory)`, `ObservationArtifact` | Writes an immutable output directory containing a place-clustered `observations/` of sharded Parquet files, a `places.parquet` snapshot, and `manifest.json` (schema v3). The hourly table stores only the columns that change hour to hour (`place_key`, `time_utc`, `variable`, `value`, `valid`), sorted by place so a `place_key` predicate skips whole row groups; everything constant per place (timezone, anchor node, sampling identity) lives once in `places.parquet`. Current variable is `rain_rate` in mm/h; no threshold is applied. Existing output directories are not overwritten. The reader holds the observations as a **lazy scan** and checks `schema_version` before reading anything. |
@@ -190,25 +199,19 @@ exist. Remaining noise includes facilities rather than resorts
 checked-in **curation overlay** for corrections the tags cannot express
 (duplicate features, facility-vs-resort). Do not claim completeness.
 
-#### Pitfalls to avoid when re-running this analysis
-- `sport`, `natural`, `leisure` are **DuckDB reserved words** — quote them.
-- DuckDB's `list_contains`/`array_contains` are generic `T` functions and
-  **cannot be unified with the `VARCHAR[]` from `string_split`**;
-  casting either operand does not help. Use
-  `list_position(string_split(...)::VARCHAR[], 'tok') > 0`.
-- Scratch analysis scripts under `/tmp` cost several debugging rounds;
-  if this becomes recurring work it belongs in the repo with tests.
-
 Tooling: `uv` + Python 3.14, `pytest`, `ruff` (E/F/I/UP/B/SIM), `ty`.
-Declared dependencies: `dynamical-catalog`, `xarray`, `polars`, `pydantic`,
-`numpy`, `duckdb`, `httpx`, `tzfpy`, `osmium`. Deliberately NOT
-used: GRIB2/cfgrib, runtime OSM fetches in the analysis path.
+Declared core dependencies: `dynamical-catalog`, `xarray`, `polars`, `pydantic`,
+`numpy`, `duckdb`, `httpx`, `icechunk`, `tzfpy`, `osmium`. The web app adds a
+FastAPI backend and a Next.js + TypeScript frontend (Node toolchain), kept out
+of the core package. Deliberately NOT used: GRIB2/cfgrib, runtime OSM
+fetches in the analysis path.
 
 - `numpy` is imported directly by `grid`, `extract`, `summarize`, `places`,
   and `climatology`, so it belongs in `pyproject.toml` even though every
   current install resolves it transitively.
 - `duckdb` is needed twice: `grid.cover_cells` uses its `spatial` extension
   for point-in-polygon, and `geofabrik` uses it for spatial joins.
+- `icechunk` backs the local Zarr V3 gridded display store (`gridded.py`).
 - `osmium` is Geofabrik-only; `boto3` is the optional `catalog-s3` extra.
   It used to be listed in *both* the core dependencies and the extra,
   which made the extra a no-op — the core install always had boto3, and
@@ -489,11 +492,15 @@ injected `opener`; no network in the fast test suite.
       cost, and `extract_series` averages covered nodes with equal
       weights, falling back to the nearest node for point or uncovered
       places.
-    - **The footprint is recorded, not just the anchor.** Artifacts gained
-      `sampling.parquet` (one row per place/node) plus `sampling`,
-      `n_cells`, `sampling_key` on the observations (schema v2). The
-      anchor columns kept their old meaning, which is the trap they always
-      were: a footprint place sitting exactly on its anchor reports
+    - **The footprint is recorded, not just the anchor.** Extraction emits
+      `sampling`, `n_cells`, and `sampling_key` alongside the anchor node
+      columns, and `extract.sampling_frame` can materialize the full
+      per-(place, node) table when needed. In observation artifacts
+      (schema v3), those static per-place sampling columns (`sampling`,
+      `n_cells`, `sampling_key`, and the anchor node) are stored once per
+      place in `places.parquet` and joined back at query time. The anchor
+      columns kept their old meaning, which is the trap they always were:
+      a footprint place sitting exactly on its anchor reports
       `snap_distance_km = 0` while averaging several nodes. `n_cells`
       exposes that.
     - **`cell_places` / `tied` are re-keyed onto `sampling_key`.** They
@@ -517,52 +524,44 @@ injected `opener`; no network in the fast test suite.
 
 ### Phase 3: Offline hourly observation artifacts
 
-9. **Build hourly artifacts for interactive queries.** **DONE for rain v2.**
+9. ~~**Build hourly artifacts for interactive queries.**~~ **DONE (schema v3).**
    `build-observations --places/--start/--end/--output` calls
-   `extract_series` and writes a new output directory containing
-   `observations.parquet`, `places.parquet`, `sampling.parquet`, and
-   `manifest.json`. The observation schema includes `place_key, time_utc,
-   variable, value, valid` plus grid-sampling details (`sampling`,
-   `n_cells`, `sampling_key`, and the anchor node). `sampling.parquet`
-   records every node each place was averaged over, so a value can always
-   be traced back to its inputs. The current builder supports only
-   `rain_rate`; it does not apply a wet threshold. The output directory is
-   not overwritten, so each build is an immutable artifact bundle. Add
-   additional variables after their source fields and units are validated.
-10. **Harden and describe the artifact.** The initial manifest records the
+   `extract_series` and writes a new immutable output directory containing
+   a place-clustered `observations/` directory (`shard-*.parquet`),
+   `places.parquet`, and `manifest.json`. The hourly observation shards
+   store only the five columns that vary hour to hour (`place_key`,
+   `time_utc`, `variable`, `value`, `valid`), sorted by `place_key` then
+   `time_utc` so a `place_key` predicate skips whole shards and row
+   groups. Everything constant per place (place identity, `geometry_wkb`,
+   timezone, anchor node, and `sampling` / `n_cells` / `sampling_key`)
+   lives once in `places.parquet` and is joined back by `query.py` at
+   read time. The current builder supports `rain_rate` in mm/h and does
+   not apply a wet threshold. Add additional variables after their source
+   fields and units are validated.
+10. **Harden and describe the artifact.** The v3 manifest records the
     dataset/source field, normalized units, requested and observed date
-    range, place-catalog content hash, build time, row counts, valid fraction,
-    attribution, and a `sampling_cells` block (row count, columns, and how
-    many places fell back to a point sample). Keep `place_key` and validity
-    information end-to-end.
-    Follow-up: add software/code version and assess completeness against the
-    expected hourly timeline, since a missing timestamp entirely is not
-    currently counted in `valid_fraction`. **`schema_version` is now
-    validated on read** — `load_observation_artifact` refuses a bundle
-    whose version this build does not read, and accepts a v1 bundle (no
-    sampling columns) by leaving the sampling table empty, which
-    `summarize` then reconstructs exactly from the anchor node. What is
-    still missing is the *code* version: the manifest records the dataset
-    and the schema, but not which build produced it.
-    Start with one region and one
-    Parquet file; partition by variable/year only if filtered reads need it.
-    The hourly artifact currently stores the scalar `Place` snapshot used
-    for extraction; it does not duplicate catalog WKB geometry. The catalog
-    builder stores WKB in its own Parquet release. The app must load a
-    catalog release consistent with the artifact's place keys/hash before
-    showing outlines or place metadata.
-    - **Place catalog refresh is an offline build step.** Use Geofabrik for
-      efficient remote POI queries, Geofabrik PBF for direct regional OSM
-      filtering, and Overpass only for small ad-hoc or supplemental lookups.
-      Never call these sources in response to app interactions. For broad
-      coverage, build one state/region at a time and merge by `place_key`.
-      Keep unnamed but otherwise valid attractions with a generated display
-      label, or record their exclusion as an explicit curation rule.
-    - **Publish the catalog snapshot as one release.** The current catalog
-      Parquet contains scalar fields and a WKB geometry column on each row;
-      any future split geometry table must share the same `place_key` and
-      release version. The separate hourly observation artifact already
-      carries the catalog attributes used for that extraction.
+    range, build time, place and row counts, valid fraction, shard count,
+    observation/static column lists, and attribution. Keep `place_key`
+    and validity information end-to-end.
+    - **`schema_version` is validated on read** —
+      `load_observation_artifact` requires `schema_version == 3` and
+      refuses older or newer bundles rather than misreading them.
+    - **Still open:** add software/code version to the manifest and assess
+      completeness against the expected hourly timeline, since a timestamp
+      missing from the archive entirely is not currently counted in
+      `valid_fraction`.
+    - **Place catalog refresh is an offline build step.** Use Geofabrik
+      PBF for regional OSM filtering (`build-catalog`) and Overpass only
+      for small ad-hoc lookups (`fetch-places`). Never call these sources
+      in response to app interactions. For broad coverage, build one
+      state/region at a time and merge by `place_key`. Keep unnamed but
+      otherwise valid attractions with a generated display label, or
+      record their exclusion as an explicit curation rule.
+    - **Publish the catalog snapshot as one release.** The catalog Parquet
+      contains scalar fields and a WKB geometry column on each row, and
+      the observation artifact's `places.parquet` snapshots those same
+      columns alongside the static grid-sampling fields used for that
+      extraction.
     - `build-catalog` writes a new local release directory and refuses to
       overwrite it. With `--s3-bucket`, it uploads the catalog Parquet and
       manifest under unique release keys, then advances a source/region-
@@ -570,36 +569,34 @@ injected `opener`; no network in the fast test suite.
       parsing. Retain older S3 releases for rollback and provenance. The CLI
       build is implemented; a scheduled cloud job and atomic refresh process
       are future deployment work.
-11. **Keep archive I/O out of app interactions.** Build or refresh artifacts
-    separately (manual refresh is adequate initially). The app must not
-    call HRRR or Overpass when a user changes a selector. The measured
-    North Shore block remains small; no database or distributed cache is
-    justified. Use Polars lazy scans or load the artifact once, then add
-    caching only if measured app latency warrants it.
-    - **The serving path now exists.** `artifacts.load_observation_artifact`
-      reads a built artifact and checks its `schema_version` before
-      anything else, so an artifact from a newer build is refused rather
-      than misread. The observations are held as a **lazy scan**, so
-      opening an artifact reads nothing; `query.select_observations`
-      pushes a bounded selection (at most `MAX_SELECTED_PLACES` places)
-      into the plan, where Polars prunes it against Parquet row-group
+11. ~~**Keep archive I/O out of app interactions.**~~ **DONE.** Build or
+    refresh artifacts separately (manual refresh is adequate initially).
+    The app does not call HRRR or Overpass when a user changes a selector.
+    The measured North Shore block remains small; no database or
+    distributed cache is justified.
+    - **The serving path is live.** `artifacts.load_observation_artifact`
+      validates `schema_version` and holds `observations/*.parquet` as a
+      **lazy scan**, so opening an artifact reads only `manifest.json` and
+      the small `places.parquet` table. `query.select_observations` pushes
+      a bounded selection (at most `MAX_SELECTED_PLACES = 20` places) into
+      the lazy plan, where Polars prunes shards and row groups via Parquet
       statistics, then collects and joins the static per-place columns
       back. `query.artifact_report` bundles the summary, monthly, and
       hourly tables with the reliability figure, and
       `query.build_wetness_summary` produces the one-row-per-place map.
-      `rain-report --artifact` exercises the same path from the CLI.
-      Nothing in it opens a network connection, so an app session costs
-      no archive reads.
+      `rain-report --artifact` exercises this same path with zero
+      archive reads; the web app's API (Phase 6) calls it directly.
     - **Date-bound semantics are fixed and shared.** A date-only bound
       covers the whole day, matching the extraction path's slice
       behaviour, and a requested range is clamped to the artifact's
       observed coverage so a request for years the artifact does not hold
       returns the covered part rather than nothing.
-    - **Still open:** nothing yet *resolves* which artifact a server
-      should use. There is a `latest.json` pointer for catalog releases
-      but none for observation artifacts, and no config setting that
-      points a deployment at an artifact directory. Both are deployment
-      decisions rather than analysis ones.
+    - **Artifact resolution:** the web app's backend resolves its
+      observation artifact and optional gridded store from the
+      `TSTORM_CLIMO_ARTIFACT` and `TSTORM_CLIMO_GRIDDED` environment
+      variables (or an S3 `latest.json` pointer). Publishing observation
+      artifacts to S3 with a `latest.json` pointer (matching
+      `catalog_storage.py`) remains a deployment follow-up.
 12. **Adapt to archive format changes.** dynamical.org keeps
     `analysis` (time-optimized), `analysis-virtual` (map-optimized), plus
     forecast and 18 h low-latency variants. Confirm which is best for
@@ -609,9 +606,15 @@ injected `opener`; no network in the fast test suite.
      dynamical.org from NOAA Open Data Dissemination archives") plus OSM
      attribution (ODbL) on any published notebook/site.
 
-### Phase 4: Interactive marimo-studio app
+### Phase 4: Interactive app — marimo prototype (retired)
 
-#### Gridded display store: Icechunk (built)
+> **Superseded.** The marimo app below was the first working UI and proved
+> the serving path (lazy Parquet scan, `query.artifact_report`, the Icechunk
+> gridded store). It is retired; the product is the web application in
+> **Phase 6**, which reuses the same package functions unchanged. The
+> measurements in this phase still size the server.
+
+#### Gridded display store: Icechunk (built & wired)
 
 Map views need the grid, not a per-place table. `gridded.py` writes the
 places' whole grid block as one hourly `precipitation_mm_per_hour` array
@@ -634,78 +637,66 @@ conventions:
 - **Icechunk, not a flat Zarr directory**: a later refresh appends new
   hours as a new commit and older views keep working.
 
-Not yet wired up (as of the first app version): the marimo app reads
-this store when `TSTORM_CLIMO_GRIDDED` is set and the `build-gridded`
-CLI subcommand builds it; the first real view is wet-hours-per-node for
-the store's last year.
+Wired into both the CLI and the app: `build-gridded` builds the store,
+and `app/rain_app.py` renders the wet-hours-per-node map for the store's
+last year when `TSTORM_CLIMO_GRIDDED` is set.
 
 #### Deployment decisions (settled, not yet built)
 
-- **Container:** a plain, platform-agnostic Dockerfile running
-  `marimo run` and listening on `$PORT`. No platform-specific manifest
-  (no `fly.toml`, no `render.yaml`), so the same image runs on
-  Fly/Render/Railway/ECS/Kubernetes or a plain VPS with Compose.
-- **Artifact delivery: pull from S3 at startup.** Observation artifacts
-  get the release treatment the catalog releases already have —
-  immutable keys plus a `latest.json` pointer — and the server
-  downloads the resolved artifact when it boots. This keeps the image
-  small and lets data be refreshed without a redeploy. It needs
-  `publish_observations_to_s3` and a reader for the pointer, neither of
-  which exists yet.
-- **Not decided yet:** the container's memory limit. The full
-  multi-year report peaks around 5 GB, so the limit has to be set
-  deliberately rather than left at a platform default.
+- **Container:** a plain, platform-agnostic Dockerfile serving the web
+  app (FastAPI serving the API and the built Next.js frontend) and
+  listening on `$PORT`. No platform-specific manifest (no `fly.toml`, no
+  `render.yaml`), so the same image runs on Fly/Render/Railway/ECS/
+  Kubernetes or a plain VPS with Compose.
+- **Artifact delivery: S3 releases + startup pull or direct scan.**
+  Observation artifacts get the release treatment the catalog releases
+  already have — immutable keys plus a `latest.json` pointer. The server
+  can either download the resolved artifact to local storage at boot
+  (keeping query latency local and image size small) or pass an `s3://`
+  URI directly to `load_observation_artifact` for lazy remote scans. It
+  needs `publish_observations_to_s3` and a reader for the `latest.json`
+  pointer, neither of which exists yet.
+- **Not decided yet:** the container's memory limit. Interactive queries
+  are now bounded to `MAX_SELECTED_PLACES = 20` places on the slimmed
+  schema v3 shards, which substantially reduces per-query memory
+  compared to the uncapped 110-place benchmark below; measure the
+  20-place peak on the live artifact before setting the container limit.
 
 14. ~~**Factor a reusable report/query function.**~~ **DONE**
     (`tstorm_climo/query.py`). `select_observations` takes observation data
-    plus a selected variable, date range, attraction kind, and place key
-    and returns the filtered observations; `artifact_report` returns the
-    per-place summary, the monthly and local-hour climatologies, and the
-    ranking reliability for the selected range and threshold. It is
-    independent of marimo and of network I/O, so the CLI, the tests, and
-    the app share the same analysis behaviour — `rain-report --artifact`
-    and the app call the same code.
-    - The one thing it deliberately does *not* do is decide **which**
-      artifact to serve. That is a deployment decision, and it is still
-      open.
-15. **Build the interactive view with marimo-studio.** **First version
+    plus a selected variable, date range, attraction kind, and place keys
+    (capped at `MAX_SELECTED_PLACES = 20`) and returns the filtered
+    observations; `artifact_report` returns the per-place summary, the
+    monthly and local-hour climatologies, and the ranking reliability for
+    the selected range and threshold. It is independent of marimo and of
+    network I/O, so the CLI, the tests, and the app share the same
+    analysis behaviour.
+    - Artifact paths are resolved outside `query.py` via environment
+      variables (`TSTORM_CLIMO_ARTIFACT`, `TSTORM_CLIMO_GRIDDED`) in the
+      app or `--artifact` on the CLI.
+15. **Build the interactive view with marimo.** **First version
     built** (`app/rain_app.py`): attraction kind, place multiselect
     (capped at `MAX_SELECTED_PLACES`), wet threshold, and a date range
     bounded by the artifact's own coverage; the leaderboard table with
     tie flags and the split-half reliability banner, monthly and
-    local-hour wet-frequency charts for a focus place, and — when
+    local-hour wet-frequency Altair charts for a focus place, and — when
     `TSTORM_CLIMO_GRIDDED` is set — the wet-hours-per-node map for the
     store's last year, sourced from the Icechunk store rather than the
     per-place Parquet. The app reads the artifact lazily per query via
     `query.artifact_report`; no cell opens a network connection.
     Artifact resolution is by environment variable
-    (`TSTORM_CLIMO_ARTIFACT`, `TSTORM_CLIMO_GRIDDED`), which settles
-    the deployment question "which artifact does a server serve" at
-    initial scale; `latest.json` publication for observation artifacts
-    and container hosting remain future work. Remaining polish:
-    place-outline overlays, comparing several places side by side, and
-    configurable map windows (currently store-coverage-minus-a-year).
-    Keep analysis cells
-    and reusable Python functions in the notebook/package; put presentation
-    code in a separate Studio view. Start with the simplest frontend that
-    meets the need (plain HTML is sufficient); use React/Svelte only if the
-    interaction or design warrants it. Provide controls for attraction kind,
-    place, variable, and custom start/end dates bounded by artifact coverage.
-    Resolve the latest complete place-catalog release when the app starts
-    (or reloads it); keep one consistent catalog snapshot per app session.
-    Filter hourly artifacts server-side and call the reusable summary
-    functions. Show coverage, units, source, sampling method, reliability
-    where applicable, and caveats. Initial views: map, period totals/
-    frequency, monthly and local-hour climatology, and place comparisons.
-16. **Use Studio's live Python server runtime.** Custom date ranges are an
+    (`TSTORM_CLIMO_ARTIFACT`, `TSTORM_CLIMO_GRIDDED`), and
+    `scripts/demo_artifact.py` generates a synthetic local pair for
+    network-free development. Remaining polish: place-outline overlays,
+    comparing several places side by side, and configurable map windows
+    (currently store-coverage-minus-a-year).
+16. **Use marimo's live Python server runtime.** Custom date ranges are an
     effectively unbounded input space, so a finite Prepared/zero-Python
     export cannot precompute every result. Browser/WASM execution would
     require exposing relevant data and running Python-compatible
     dependencies in each visitor's browser; keep the initial app
-    server-side instead. Studio is the view/presentation
-    tooling, not the hosting service: serve it with `marimo run` on a
-    container-capable host ([Studio run/share guide](https://marimo-team.github.io/marimo-studio/guide/run-and-share/),
-    [marimo deployment guide](https://docs.marimo.io/guides/deploying/)).
+    server-side instead and serve it with `marimo run app/rain_app.py` on
+    a container-capable host ([marimo deployment guide](https://docs.marimo.io/guides/deploying/)).
     Prepared static exports remain an option for fixed reports or a small,
     explicitly enumerated set of choices.
 17. **Keep app runtime read-only and independent of live data APIs.** Give
@@ -769,19 +760,18 @@ Three things follow, and they shape the hosting plan:
   (`summarize.prepare_observations`) cut the eight-year report from
   4.3 s to 2.6 s and the peak from 5.6 GB to 5.2 GB. The numbers are
   unchanged; only the work done to reach them.
+- **Slimming and sharding the observations (landed in schema v3).**
+  The schema-v2 observations repeated eight per-place-constant columns
+  (`y_index`, `x_index`, `grid_lat`, `grid_lon`, `snap_distance_km`,
+  `sampling`, `n_cells`, `sampling_key`) on every hourly row. Schema v3
+  drops `grid_lat`/`grid_lon`, moves the static per-place columns into
+  `places.parquet` (joined back at query time), clusters and shards
+  `observations/` by `place_key`, and bounds interactive queries to
+  `MAX_SELECTED_PLACES = 20`.
 
-Two things were measured and are **not** worth doing, so they are
+One alternative was measured and is **not** worth doing, so it is
 recorded here rather than repeated:
 
-- **A narrower frame would help further.** The observations carry eight
-  per-place-constant columns (`y_index`, `x_index`, `grid_lat`,
-  `grid_lon`, `snap_distance_km`, `sampling`, `n_cells`,
-  `sampling_key`) repeated once per hour per place. The same facts are
-  110 rows × 10 cols in the metadata tables. Dropping them from the
-  frame and rejoining them onto the *result* rather than onto the
-  observations would cut the peak further — but the anchor node and
-  the sampled node set are different facts, and the two tables do not
-  carry the same columns.
 - **Aggregating inside each timezone partition** to avoid concatenating
   the converted frame was measured at 1,062 MB against 851 MB for the
   straightforward version: `partition_by` copies the frame either way,
@@ -827,6 +817,98 @@ directly, with the same pushdown, and no local copy is needed.
     validated. Keep the user-facing variable registry separate from OSM
     attraction kinds. Add other datasets only when a concrete coverage or
     resolution need justifies them.
+
+### Phase 6: Web application (the product)
+
+**Decision (2026-11-02).** The user-facing product is a proper web app,
+built as the first of several apps on the reusable `tstorm_climo` package.
+Stack: **FastAPI** (backend, pydantic-native) + **Next.js / TypeScript**
+(frontend) + **MapLibre GL JS + Deck.gl** (map) + a charting library for
+the time series. The marimo prototype (Phase 4) is retired.
+
+#### Why this stack
+
+- The analysis is already decoupled: `query.py`, `gridded.py`, and
+  `summarize.py` import neither marimo nor any web framework, so the web
+  app is a thin layer over `tstorm_climo` and the two never diverge.
+- FastAPI is pydantic-native, matching the repo's modelling style, and
+  serves JSON/GeoJSON with negligible ceremony.
+- Next.js + TypeScript give the richest geospatial ecosystem for the map
+  (MapLibre GL JS, Deck.gl's React bindings, and Kepler.gl for fast
+  prototyping) and a reusable pattern for future apps.
+
+#### Layout (first app of many)
+
+```text
+src/tstorm_climo/         # shared analysis library (no web/UI deps)
+apps/web/backend/         # FastAPI — the API layer over tstorm_climo
+apps/web/frontend/        # Next.js + TypeScript — the UI
+scripts/demo_artifact.py  # network-free synthetic artifacts for dev/tests
+tests/                    # library + API tests
+```
+
+Each future app adds a sibling service (or a new `apps/` entry) that
+imports `tstorm_climo`; the package never gains UI or web code.
+
+#### API surface (draft)
+
+- `GET  /api/places?kind=…` → the artifact's places (identity, kind,
+  geometry), bounded by `MAX_SELECTED_PLACES`.
+- `POST /api/report` → `{place_keys, start, end, threshold_mm_per_hour}`
+  → `artifact_report(...)`: the summary, monthly, and local-hour tables
+  plus the split-half reliability figure.
+- `GET  /api/wetness?start&end&threshold` → the wet-hours-per-node map as
+  GeoJSON (one feature per node) from `gridded.wet_hours`.
+
+The API is thin: pydantic validates input, date ranges are clamped to the
+artifact's coverage (already in `query.py`), and the rest delegates to the
+package.
+
+#### Data delivery
+
+- **Time series** are small (≤ `MAX_SELECTED_PLACES` places × a bounded
+  range); return them as JSON in the report response.
+- **Geometry** (places, footprints, the wet-hours grid) is GeoJSON. The
+  North Shore block is ~39×29 nodes, so GeoJSON is enough at this scale;
+  move to vector/raster tiles (e.g. MVT via `tippecanoe`/`Martin`) only
+  when a region larger than the block is served.
+- Keep raw rates vs. conclusions: the gridded store holds rates, and wet
+  hours are a query-time reduce (`gridded.wet_hours`), as today.
+
+#### Serving and deployment
+
+- One container first: FastAPI serves the API and the built Next.js
+  frontend (Next.js standalone output). Separate API + frontend services
+  are a later option, not the first cut.
+- Pull the observation artifact from S3 at startup via a `latest.json`
+  pointer (add `publish_observations_to_s3` and a reader; the catalog
+  release already has this pattern in `catalog_storage.py`).
+- Size for the largest allowed query or bound it in the API; the schema-v3
+  `MAX_SELECTED_PLACES = 20` cap reduces per-query memory well below the
+  uncapped 110-place benchmark above — measure the 20-place peak before
+  setting a container limit.
+- Read-only at runtime: no HRRR/Overpass/network in the serving path.
+
+#### Build order
+
+1. ~~Retire the marimo app~~ and its `app` dependency group (done).
+2. Add `publish_observations_to_s3` + a `latest.json` reader (mirrors the
+   catalog publishing path in `catalog_storage.py`).
+3. FastAPI backend: pydantic request models and the three endpoints above,
+   wired to `query.py`/`gridded.py` unchanged; test against
+   `scripts/demo_artifact.py`.
+4. Next.js frontend: the leaderboard (with the reliability banner), the
+   monthly/local-hour charts, and the MapLibre/Deck.gl wet-hours map with
+   place overlays and outlines.
+5. Dockerfile (FastAPI + Next.js) with the S3 pull at startup; deploy to a
+   container host (Fly/Render/Railway/VPS).
+
+#### Reliability stays first-class
+
+The leaderboard's split-half reliability (Phase 3) is the most important
+finding in the project and outranks presentation. The web app shows the
+reliability figure next to any ranking and labels coarser/regional
+comparisons honestly, exactly as the marimo prototype did.
 
 ## Open design questions
 

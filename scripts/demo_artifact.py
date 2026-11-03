@@ -1,4 +1,4 @@
-"""Build small demo artifacts for local development of the marimo app.
+"""Build small demo artifacts for local development of the web app and API.
 
 The demo archive is synthetic (30 days of hourly precipitation over a
 10x12 grid near the North Shore, ~15% of hours wet, one noon gap) so
@@ -12,7 +12,7 @@ app reads:
 
 Run and follow the printed export lines:
 
-    uv run --group app python app/demo_artifact.py
+    uv run python scripts/demo_artifact.py
 """
 
 from __future__ import annotations

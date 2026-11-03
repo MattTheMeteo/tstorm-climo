@@ -19,8 +19,10 @@ Some resources that will be helpful:
     This is a Python data manipulation tool which is very fast and good for time series data
 - pydantic
     This is my preferred way to build classes
-- marimo
-    - A great data viz tool
+- FastAPI
+    - The web-app backend; pydantic-native, serves the analysis as JSON/GeoJSON
+- MapLibre GL JS + Deck.gl
+    - Mapping for the Next.js + TypeScript frontend
 - S3
     - Backend storage should be done in Amazon S3
 
@@ -31,8 +33,9 @@ fill the code base false confidence.
 It's important to pass type checks but it's also important how they pass. Simply wrapping a call in
 `typing.cast` or a similar call and moving on should be used as a last resort; types exist because they prevent bugs.
 
-For type checking, let's use ty. Marimo notebooks should run their own "marimo check" before each one.
+For type checking, let's use ty.
 We should also always be checking that we're using rust as our linter.
 ## Goal
-Ultimately, I'd like to host a marimo notebook or even a site that shows our analysis of the
-thunderstorm / rain climatologies of North Shore golf courses.
+Ultimately, I'd like to host a proper web application (FastAPI + Next.js) that shows our analysis
+of the thunderstorm / rain climatologies of North Shore golf courses — the first of several apps
+on the reusable `tstorm_climo` package.

@@ -22,13 +22,6 @@ uv fetches the pinned interpreter from `.python-version` automatically.
 uv sync
 ```
 
-The interactive marimo Studio app pulls in extra dependencies that are kept
-out of the core CLI:
-
-```sh
-uv sync --group app
-```
-
 ## Usage
 
 ```sh
@@ -136,8 +129,9 @@ of grid nodes get identical numbers and are marked `tied`.
 
 ### Running the app
 
-The marimo app serves views from built artifacts — it reads no archive
-and no network while running:
+The web app serves views from built artifacts — it reads no archive and
+no network while running. The analysis library builds the artifacts; the
+FastAPI backend serves them to the Next.js frontend (see PLAN.md Phase 6).
 
 ```sh
 uv run tstorm-climo build-observations \
@@ -150,11 +144,6 @@ uv run tstorm-climo build-gridded \
   --start 2025-11-01 --end 2026-11-01 \
   --output artifacts/north-shore/gridded \
   --chunk-hours 744
-
-export TSTORM_CLIMO_ARTIFACT="artifacts/north-shore/rain-2018-2025"
-export TSTORM_CLIMO_GRIDDED="artifacts/north-shore/gridded"  # optional, enables the map
-uv sync --group app
-uv run --group app marimo run app/rain_app.py
 ```
 
 The observation artifact backs the leaderboard, monthly, and local-hour
@@ -164,7 +153,7 @@ wet-hours-per-node map over its last year. `--chunk-hours` defaults to
 about a month. For a quick look without building anything real:
 
 ```sh
-uv run --group app python app/demo_artifact.py   # network-free synthetic pair
+uv run python scripts/demo_artifact.py   # network-free synthetic pair
 ```
 
 ## Development checks
@@ -176,8 +165,7 @@ uv run ruff format --check # style
 uv run ty check            # type check
 ```
 
-CI runs all four plus a package build, and resolves the `app` dependency
-group so the marimo pins are checked before anything is deployed.
+CI runs all four plus a package build.
 
 ## Status
 
@@ -185,13 +173,14 @@ Implemented: HRRR data access, Geofabrik place-catalog builds, OSM place
 fetching, grid mapping, footprint and point sampling, per-place rain
 extraction and summaries, the `rain-report` CLI, reusable hourly rain
 Parquet artifacts, and a gridded display store (Zarr V3 on Icechunk) with
-its `build-gridded` CLI. The marimo app (`app/rain_app.py`) serves the
-leaderboard, monthly, local-hour, and wet-hours-map views from prepared
-artifacts — see "Running the app" above. A hosted deployment (artifact
-S3 publication, `latest.json` pointer, container) is not built. The planned
-app will calculate in response to user choices from prepared artifacts, not
-fetch HRRR or Overpass data on each interaction — already true of the
-local app.
+its `build-gridded` CLI. The web application — a **FastAPI** backend over
+the existing query/gridded functions plus a **Next.js + TypeScript**
+frontend with **MapLibre GL JS + Deck.gl** maps — is under construction
+(see PLAN.md Phase 6); the earlier marimo prototype (`app/rain_app.py`)
+has been retired. A hosted deployment (artifact S3 publication,
+`latest.json` pointer, container) is not yet built. The app calculates in
+response to user choices from prepared artifacts, not by fetching HRRR or
+Overpass data on each interaction.
 
 Pipeline: places (OSM via Overpass as CSV, or a Geofabrik catalog with
 geometry) → `Grid` maps each place to its HRRR nodes — every node its

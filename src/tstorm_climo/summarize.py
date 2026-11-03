@@ -27,21 +27,159 @@ Three things this layer is careful about:
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
 
 from tstorm_climo.extract import (
     N_CELLS_COLUMN,
-    POINT_SAMPLING,
     RATE_COLUMN,
     SAMPLING_COLUMN,
     SAMPLING_KEY_COLUMN,
     TIME_COLUMN,
     VALID_COLUMN,
 )
-from tstorm_climo.places import UTC_TIMEZONE, Place
+from tstorm_climo.places import PLACE_KEY_COLUMN, UTC_TIMEZONE, Place
 from tstorm_climo.thresholds import DEFAULT_WET_THRESHOLD_MM_PER_HOUR
+
+
+@dataclass(frozen=True)
+class PreparedObservations:
+    """Observations prepared once for every summary that needs them.
+
+    Joining the place metadata, converting to local time, and marking
+    the wet hours are each a full pass over the frame, and a report
+    wants all three. Doing them once and sharing the result is the
+    difference between a report that takes a second and one that takes
+    several.
+
+    Attributes:
+        keyed: Every observation row, joined to its place, with the
+            sampling columns and the local hour/month/day.
+        wet: The valid rows of :attr:`keyed`, with the ``wet`` flag
+            against the chosen threshold.
+    """
+
+    keyed: pl.DataFrame
+    wet: pl.DataFrame
+
+    def summary(self) -> pl.DataFrame:
+        """One row per place: wet frequency, depth, coverage, and ties."""
+        keyed = self.keyed
+        totals = keyed.group_by(PLACE_KEY_COLUMN).agg(
+            steps=pl.len(), invalid_hours=pl.col(VALID_COLUMN).not_().sum()
+        )
+        stats = self.wet.group_by(PLACE_KEY_COLUMN).agg(
+            valid_hours=pl.len(),
+            wet_hours=pl.col("wet").sum(),
+            rain_mm=pl.col(RATE_COLUMN).sum(),
+        )
+
+        out = (
+            keyed.group_by(PLACE_KEY_COLUMN)
+            .agg(
+                pl.col("name").first(),
+                pl.col("kind").first(),
+                pl.col("timezone").first(),
+                pl.col("y_index").first(),
+                pl.col("x_index").first(),
+                pl.col("snap_distance_km").first(),
+                pl.col(SAMPLING_COLUMN).first(),
+                pl.col(N_CELLS_COLUMN).first(),
+                pl.col(SAMPLING_KEY_COLUMN).first(),
+            )
+            .join(totals, on=PLACE_KEY_COLUMN)
+            .join(stats, on=PLACE_KEY_COLUMN)
+            .with_columns(
+                wet_fraction=pl.col("wet_hours") / pl.col("valid_hours"),
+                coverage=pl.col("valid_hours") / pl.col("steps"),
+            )
+        )
+
+        # Identity of the sampled set, not of the anchor node. See the Note.
+        out = out.with_columns(
+            cell_places=pl.len().over(SAMPLING_KEY_COLUMN)
+        ).with_columns(tied=pl.col("cell_places") > 1)
+
+        # The tie-break on place_key matters: grouping does not promise
+        # a row order, so sorting on wet_fraction alone would shuffle
+        # equally-wet places from one run to the next. A published
+        # leaderboard has to come out the same every time.
+        return out.with_columns(
+            rank=pl.col("wet_fraction").rank("dense").cast(pl.Int64)
+        ).sort("wet_fraction", PLACE_KEY_COLUMN)
+
+    def monthly(self) -> pl.DataFrame:
+        """Wet frequency per place per calendar month, in local time."""
+        return (
+            self.wet.group_by(PLACE_KEY_COLUMN, "local_month")
+            .agg(
+                name=pl.col("name").first(),
+                kind=pl.col("kind").first(),
+                valid_hours=pl.len(),
+                wet_hours=pl.col("wet").sum(),
+                rain_mm=pl.col(RATE_COLUMN).sum(),
+            )
+            .with_columns(wet_fraction=pl.col("wet_hours") / pl.col("valid_hours"))
+            .sort(PLACE_KEY_COLUMN, "local_month")
+        )
+
+    def hourly(self) -> pl.DataFrame:
+        """Wet frequency per place per local hour of day.
+
+        ``hours_observed`` is how many times that local hour occurred in
+        the window, which is not constant across months or across
+        daylight-saving transitions. ``wet_fraction`` is wet hours divided
+        by that, so 0.5 means "half the time this hour came round, it was
+        raining" regardless of how often it came round.
+        """
+        return (
+            self.wet.group_by(PLACE_KEY_COLUMN, "local_hour")
+            .agg(
+                name=pl.col("name").first(),
+                kind=pl.col("kind").first(),
+                hours_observed=pl.len(),
+                wet_hours=pl.col("wet").sum(),
+                rain_mm=pl.col(RATE_COLUMN).sum(),
+            )
+            .with_columns(wet_fraction=pl.col("wet_hours") / pl.col("hours_observed"))
+            .sort(PLACE_KEY_COLUMN, "local_hour")
+        )
+
+    def reliability(self) -> float:
+        """Split-half reliability of the ranking over this prepared frame."""
+        return _split_half_reliability(self.wet)
+
+
+def prepare_observations(
+    series: pl.DataFrame,
+    places: Sequence[Place],
+    *,
+    threshold_mm_per_hour: float = DEFAULT_WET_THRESHOLD_MM_PER_HOUR,
+) -> PreparedObservations:
+    """Join, localize, and threshold an observation series once.
+
+    The result feeds :meth:`PreparedObservations.summary`,
+    :meth:`~PreparedObservations.monthly`,
+    :meth:`~PreparedObservations.hourly`, and
+    :meth:`~PreparedObservations.reliability` without repeating the same
+    full-frame work.
+
+    Args:
+        series: Long-format extraction output.
+        places: Place records corresponding to the series' ``place_key``
+            values.
+        threshold_mm_per_hour: Rate above which an hour counts as wet.
+
+    Returns:
+        The prepared frame, ready for the summary functions.
+    """
+    keyed = add_local_time(_with_places(series, places))
+    wet = keyed.filter(pl.col(VALID_COLUMN)).with_columns(
+        wet=pl.col(RATE_COLUMN) > threshold_mm_per_hour
+    )
+    return PreparedObservations(keyed=keyed, wet=wet)
 
 
 def add_local_time(series: pl.DataFrame) -> pl.DataFrame:
@@ -114,47 +252,9 @@ def place_summary(
         ``sampling_key`` is a single node and this reduces to the old
         anchor-node count exactly.
     """
-    keyed = _with_sampling(_with_places(series, places))
-    wet = wet_rows(keyed, threshold_mm_per_hour)
-
-    totals = keyed.group_by("place_key").agg(
-        steps=pl.len(), invalid_hours=pl.col(VALID_COLUMN).not_().sum()
-    )
-    stats = wet.group_by("place_key").agg(
-        valid_hours=pl.len(),
-        wet_hours=pl.col("wet").sum(),
-        rain_mm=pl.col(RATE_COLUMN).sum(),
-    )
-
-    out = (
-        keyed.group_by("place_key")
-        .agg(
-            pl.col("name").first(),
-            pl.col("kind").first(),
-            pl.col("timezone").first(),
-            pl.col("y_index").first(),
-            pl.col("x_index").first(),
-            pl.col("snap_distance_km").first(),
-            pl.col(SAMPLING_COLUMN).first(),
-            pl.col(N_CELLS_COLUMN).first(),
-            pl.col(SAMPLING_KEY_COLUMN).first(),
-        )
-        .join(totals, on="place_key")
-        .join(stats, on="place_key")
-        .with_columns(
-            wet_fraction=pl.col("wet_hours") / pl.col("valid_hours"),
-            coverage=pl.col("valid_hours") / pl.col("steps"),
-        )
-    )
-
-    # Identity of the sampled set, not of the anchor node. See the Note.
-    out = out.with_columns(cell_places=pl.len().over(SAMPLING_KEY_COLUMN)).with_columns(
-        tied=pl.col("cell_places") > 1
-    )
-
-    return out.with_columns(
-        rank=pl.col("wet_fraction").rank("dense").cast(pl.Int64)
-    ).sort("wet_fraction")
+    return prepare_observations(
+        series, places, threshold_mm_per_hour=threshold_mm_per_hour
+    ).summary()
 
 
 def by_local_month(
@@ -164,20 +264,9 @@ def by_local_month(
     threshold_mm_per_hour: float = DEFAULT_WET_THRESHOLD_MM_PER_HOUR,
 ) -> pl.DataFrame:
     """Wet frequency per place per calendar month, in local time."""
-    wet = wet_rows(_with_places(series, places), threshold_mm_per_hour)
-    local = add_local_time(wet)
-    return (
-        local.group_by("place_key", "local_month")
-        .agg(
-            name=pl.col("name").first(),
-            kind=pl.col("kind").first(),
-            valid_hours=pl.len(),
-            wet_hours=pl.col("wet").sum(),
-            rain_mm=pl.col(RATE_COLUMN).sum(),
-        )
-        .with_columns(wet_fraction=pl.col("wet_hours") / pl.col("valid_hours"))
-        .sort("place_key", "local_month")
-    )
+    return prepare_observations(
+        series, places, threshold_mm_per_hour=threshold_mm_per_hour
+    ).monthly()
 
 
 def by_local_hour(
@@ -194,20 +283,9 @@ def by_local_hour(
     by that, so 0.5 means "half the time this hour came round, it was
     raining" regardless of how often it came round.
     """
-    wet = wet_rows(_with_places(series, places), threshold_mm_per_hour)
-    local = add_local_time(wet)
-    return (
-        local.group_by("place_key", "local_hour")
-        .agg(
-            name=pl.col("name").first(),
-            kind=pl.col("kind").first(),
-            hours_observed=pl.len(),
-            wet_hours=pl.col("wet").sum(),
-            rain_mm=pl.col(RATE_COLUMN).sum(),
-        )
-        .with_columns(wet_fraction=pl.col("wet_hours") / pl.col("hours_observed"))
-        .sort("place_key", "local_hour")
-    )
+    return prepare_observations(
+        series, places, threshold_mm_per_hour=threshold_mm_per_hour
+    ).hourly()
 
 
 def scorecard(
@@ -235,9 +313,12 @@ def scorecard(
         out = out.filter(pl.col("local_month") == month)
     # Tied places are kept adjacent so the shared grid node is obvious,
     # but a month-sliced table has no node columns, so sort on whatever
-    # is actually present.
+    # is actually present. ``place_key`` breaks any remaining tie, so
+    # the same data always prints in the same order.
     keys = [
-        c for c in ("wet_fraction", "y_index", "x_index", "name") if c in out.columns
+        c
+        for c in ("wet_fraction", "y_index", "x_index", "name", PLACE_KEY_COLUMN)
+        if c in out.columns
     ]
     return out.sort(keys)
 
@@ -265,10 +346,15 @@ def split_half_reliability(
         has too little variation to correlate.
     """
     wet = wet_rows(series, threshold_mm_per_hour)
+    return _split_half_reliability(wet)
+
+
+def _split_half_reliability(wet: pl.DataFrame) -> float:
+    """Correlate each place's wet fraction in the two halves of a range."""
     if wet.height == 0:
         return float("nan")
 
-    n_places = wet["place_key"].n_unique()
+    n_places = wet[PLACE_KEY_COLUMN].n_unique()
     if n_places < 2:
         return float("nan")
 
@@ -280,7 +366,7 @@ def split_half_reliability(
     right = _wet_fractions(wet.filter(pl.col(TIME_COLUMN) > midpoint))
     if left is None or right is None:
         return float("nan")
-    aligned = left.join(right, on="place_key", how="inner", suffix="_right")
+    aligned = left.join(right, on=PLACE_KEY_COLUMN, how="inner", suffix="_right")
     if (
         aligned.height < 2
         or aligned["wet_fraction"].n_unique() < 2
@@ -298,41 +384,20 @@ def split_half_reliability(
 def _wet_fractions(part: pl.DataFrame) -> pl.DataFrame | None:
     """Per-place wet fractions for one time block, keyed by place_key."""
     counts = (
-        part.group_by("place_key")
+        part.group_by(PLACE_KEY_COLUMN)
         .agg(wet=pl.col("wet").sum(), total=pl.len())
         .with_columns(wet_fraction=pl.col("wet") / pl.col("total"))
     )
     if counts["wet_fraction"].n_unique() < 2:
         return None
-    return counts.select("place_key", "wet_fraction")
-
-
-def _with_sampling(series: pl.DataFrame) -> pl.DataFrame:
-    """Ensure the sampling columns exist, synthesising them when absent.
-
-    Artifacts written before footprint sampling (schema v1) carry no
-    sampling columns. Every value in one is a single-node point sample,
-    so the anchor node *is* the sampled set and reconstructing the
-    columns is exact rather than an approximation. That keeps old
-    artifacts readable without silently mislabelling them.
-    """
-    if SAMPLING_KEY_COLUMN in series.columns:
-        return series
-    height = series.height
-    return series.with_columns(
-        pl.Series(SAMPLING_COLUMN, [POINT_SAMPLING] * height, dtype=pl.String),
-        pl.Series(N_CELLS_COLUMN, [1] * height, dtype=pl.Int64),
-        (
-            pl.col("y_index").cast(pl.String) + "x" + pl.col("x_index").cast(pl.String)
-        ).alias(SAMPLING_KEY_COLUMN),
-    )
+    return counts.select(PLACE_KEY_COLUMN, "wet_fraction")
 
 
 def _with_places(series: pl.DataFrame, places: Sequence[Place]) -> pl.DataFrame:
     """Attach place metadata to each row, keyed by stable ``place_key``."""
     table = pl.DataFrame(
         {
-            "place_key": pl.Series(
+            PLACE_KEY_COLUMN: pl.Series(
                 [place.place_key for place in places], dtype=pl.String
             ),
             "name": [p.display_name for p in places],
@@ -340,11 +405,11 @@ def _with_places(series: pl.DataFrame, places: Sequence[Place]) -> pl.DataFrame:
             "timezone": [p.timezone for p in places],
         }
     )
-    if table["place_key"].n_unique() != len(places):
+    if table[PLACE_KEY_COLUMN].n_unique() != len(places):
         raise ValueError("places must have unique place_key values")
     # Join unconditionally, even on an empty series, so output schema and
     # metadata behavior do not depend on whether any rows were extracted.
-    joined = series.join(table, on="place_key", how="left")
+    joined = series.join(table, on=PLACE_KEY_COLUMN, how="left")
     if joined.height and joined["name"].null_count():
         raise ValueError("series contains place_key values missing from places")
     return joined

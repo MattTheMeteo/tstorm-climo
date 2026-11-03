@@ -33,7 +33,7 @@ from typing import Any
 
 import polars as pl
 
-from tstorm_climo.places import great_circle_km
+from tstorm_climo.places import PLACE_KEY_COLUMN, great_circle_km
 from tstorm_climo.provenance import (
     PLACES_ATTRIBUTION,
     PLACES_LICENSE,
@@ -63,7 +63,7 @@ KIND_MATCHES: dict[str, list[tuple[str, tuple[str, ...]]]] = {
 MATCH_SOURCE = "match_source"
 
 PLACES_SCHEMA: dict[str, Any] = {
-    "place_key": pl.String,
+    PLACE_KEY_COLUMN: pl.String,
     "osm_type": pl.String,
     "osm_id": pl.String,
     "name": pl.String,
@@ -178,7 +178,7 @@ def deduplicate_places(places: pl.DataFrame, *, tol_km: float = 1.0) -> pl.DataF
             ):
                 group_kept.append(row)
         kept.extend(group_kept)
-    return pl.DataFrame(kept, schema=PLACES_SCHEMA).sort("place_key")
+    return pl.DataFrame(kept, schema=PLACES_SCHEMA).sort(PLACE_KEY_COLUMN)
 
 
 def _representation_preference() -> pl.Expr:

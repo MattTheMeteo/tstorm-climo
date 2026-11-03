@@ -65,6 +65,9 @@ def make_series(
         "grid_lon": [],
         "snap_distance_km": [],
         "tz_name": [],
+        "sampling": [],
+        "n_cells": [],
+        "sampling_key": [],
     }
     for p in range(n_places):
         key = place(p).place_key
@@ -79,6 +82,9 @@ def make_series(
             rows["grid_lon"].append(-70.9)
             rows["snap_distance_km"].append(1.0)
             rows["tz_name"].append(zone_list[p])
+            rows["sampling"].append("point")
+            rows["n_cells"].append(1)
+            rows["sampling_key"].append(f"{p}x0")
     return pl.DataFrame(
         rows,
         schema={
@@ -92,6 +98,9 @@ def make_series(
             "grid_lon": pl.Float64,
             "snap_distance_km": pl.Float64,
             "tz_name": pl.String,
+            "sampling": pl.String,
+            "n_cells": pl.Int64,
+            "sampling_key": pl.String,
         },
     )
 
@@ -165,22 +174,49 @@ def test_drier_places_rank_first() -> None:
     assert out["rank"].to_list() == [1, 2, 3]
 
 
-def test_shared_grid_node_is_flagged_as_tied() -> None:
-    """Colocated places get identical numbers and must be marked."""
-    series = make_series([[1.0, 0.0], [1.0, 0.0]])
-    # Force both places onto the same node, as locate_places would.
-    series = series.with_columns(pl.lit(7).alias("y_index"))
-    out = place_summary(series, [place(0), place(1)])
-    assert out["tied"].to_list() == [True, True]
-    assert out["cell_places"].to_list() == [2, 2]
-    assert out["wet_hours"].to_list() == [1, 1]
-
-
 def test_distinct_nodes_are_not_tied() -> None:
     series = make_series([[1.0, 0.0], [1.0, 0.0]])
     out = place_summary(series, [place(0), place(1)])
     assert out["tied"].to_list() == [False, False]
     assert out["cell_places"].to_list() == [1, 1]
+
+
+def test_the_summary_order_is_reproducible() -> None:
+    """A published leaderboard must come out the same every time.
+
+    Grouping does not promise a row order, so sorting on the wet
+    fraction alone would shuffle equally-wet places from one run to the
+    next. The tie-break on place_key is what makes it stable.
+    """
+    # Every place is wet in exactly the same number of hours, so all of
+    # them tie on wet fraction.
+    series = make_series([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]])
+    places = [place(0), place(1), place(2)]
+
+    orders = {
+        tuple(place_summary(series, places)["place_key"].to_list()) for _ in range(5)
+    }
+
+    assert len(orders) == 1
+    # And the order is the stable one, not just any order.
+    assert orders.pop() == ("osm:way:0", "osm:way:1", "osm:way:2")
+
+
+def test_tied_places_are_ordered_by_place_key() -> None:
+    series = make_series([[1.0, 0.0], [1.0, 0.0]])
+    out = place_summary(series, [place(1), place(0)])
+    assert out["place_key"].to_list() == ["osm:way:0", "osm:way:1"]
+
+
+def test_the_scorecard_breaks_ties_deterministically() -> None:
+    """The printed order must not depend on how the rows came out."""
+    series = make_series([[1.0, 0.0], [1.0, 0.0]])
+    summary = place_summary(series, [place(0), place(1)])
+
+    orders = {tuple(scorecard(summary)["place_key"].to_list()) for _ in range(5)}
+
+    assert len(orders) == 1
+    assert orders.pop() == ("osm:way:0", "osm:way:1")
 
 
 def with_sampling(
@@ -253,17 +289,6 @@ def test_point_sampling_key_reduces_to_the_anchor_node() -> None:
         make_series([[1.0, 0.0], [1.0, 0.0]]),
         ["7x0", "7x0"],
     )
-    out = place_summary(series, [place(0), place(1)])
-    assert out["tied"].to_list() == [True, True]
-    assert out["n_cells"].to_list() == [1, 1]
-
-
-def test_series_without_sampling_columns_falls_back_to_the_anchor() -> None:
-    """A v1 artifact stays readable and keeps its original tie semantics."""
-    series = make_series([[1.0, 0.0], [1.0, 0.0]]).with_columns(
-        pl.lit(7).alias("y_index")
-    )
-    assert "sampling_key" not in series.columns
     out = place_summary(series, [place(0), place(1)])
     assert out["tied"].to_list() == [True, True]
     assert out["n_cells"].to_list() == [1, 1]

@@ -5,12 +5,17 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 import polars as pl
 
-from tstorm_climo.artifacts import build_hourly_observation_artifact
+from tstorm_climo.artifacts import (
+    build_hourly_observation_artifact,
+    load_observation_artifact,
+)
 from tstorm_climo.catalog import KIND_MATCHES
 from tstorm_climo.catalog_storage import (
     DEFAULT_CATALOG_PREFIX,
@@ -19,9 +24,11 @@ from tstorm_climo.catalog_storage import (
 from tstorm_climo.climatology import summarize_grid
 from tstorm_climo.extract import extract_series
 from tstorm_climo.geofabrik import build_geofabrik_catalog
+from tstorm_climo.gridded import build_gridded_artifact
 from tstorm_climo.hrrr import load_precipitation
 from tstorm_climo.osm import KIND_TAGS, build_query, run_query
 from tstorm_climo.places import (
+    Place,
     deduplicate,
     from_overpass,
     load_places,
@@ -34,6 +41,7 @@ from tstorm_climo.provenance import (
     format_caveats,
     write_metadata,
 )
+from tstorm_climo.query import select_all_observations
 from tstorm_climo.summarize import (
     DEFAULT_WET_THRESHOLD_MM_PER_HOUR,
     by_local_month,
@@ -94,27 +102,82 @@ def build_parser() -> argparse.ArgumentParser:
         help="New output directory for the Parquet files and manifest.",
     )
 
-    report = subparsers.add_parser(
-        "rain-report",
-        help="Rank places by how often it rains on them.",
+    grid = subparsers.add_parser(
+        "build-gridded",
+        help=(
+            "Build a gridded display artifact (Zarr V3 on Icechunk) for "
+            "map views, from the same places and range."
+        ),
     )
-    report.add_argument(
+    grid.add_argument(
         "--places",
         required=True,
         help=(
             "Places CSV (as written by fetch-places) or a catalog "
-            "places.parquet with footprint geometry."
+            "places.parquet with footprint geometry. They define the "
+            "grid block the store covers."
+        ),
+    )
+    grid.add_argument(
+        "--start",
+        required=True,
+        help="Inclusive start of the time range (e.g. 2025-11-01).",
+    )
+    grid.add_argument(
+        "--end",
+        required=True,
+        help="Inclusive end of the time range (e.g. 2026-11-01).",
+    )
+    grid.add_argument(
+        "--output",
+        required=True,
+        help="New output directory for the Icechunk store and manifest.",
+    )
+    grid.add_argument(
+        "--chunk-hours",
+        type=int,
+        default=None,
+        help=(
+            "Hours per chunk along time (default: a month, clamped to "
+            "the range's length)."
+        ),
+    )
+
+    report = subparsers.add_parser(
+        "rain-report",
+        help="Rank places by how often it rains on them.",
+    )
+    source = report.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--places",
+        help=(
+            "Places CSV (as written by fetch-places) or a catalog "
+            "places.parquet with footprint geometry. Reads the archive; "
+            "use --artifact to report from prepared data instead."
+        ),
+    )
+    source.add_argument(
+        "--artifact",
+        help=(
+            "Directory of a built observation artifact. Reports from the "
+            "prepared hourly data without reading the archive."
         ),
     )
     report.add_argument(
         "--start",
-        required=True,
-        help="Inclusive start of the time range (e.g. 2025-06-01).",
+        help=(
+            "Inclusive start of the time range (e.g. 2025-06-01). "
+            "Required with --places; optional with --artifact, where it "
+            "defaults to the artifact's coverage."
+        ),
     )
     report.add_argument(
         "--end",
-        required=True,
-        help="Inclusive end of the time range (e.g. 2025-07-01).",
+        help=(
+            "Inclusive end of the time range (e.g. 2025-07-01). "
+            "Required with --places; optional with --artifact, where it "
+            "defaults to the artifact's coverage."
+        ),
     )
     report.add_argument(
         "--threshold",
@@ -254,6 +317,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "build-observations":
         return _build_observations(args)
 
+    if args.command == "build-gridded":
+        return _build_gridded(args)
+
     if args.command == "rain-report":
         return _rain_report(args)
 
@@ -352,47 +418,68 @@ def _build_observations(args: argparse.Namespace) -> int:
         return 1
 
     print(
-        f"Wrote {manifest['observations']['row_count']} observations for "
-        f"{manifest['place_catalog']['place_count']} places to {args.output}"
+        f"Wrote {manifest['row_count']} observations for "
+        f"{manifest['place_count']} places to {args.output}"
     )
     print(
         f"Observed {manifest['date_range']['observed_start']} through "
         f"{manifest['date_range']['observed_end']}"
     )
-    print(f"Valid observation rows: {manifest['observations']['valid_fraction']:.1%}")
+    print(f"Valid observation rows: {manifest['valid_fraction']:.1%}")
+    return 0
+
+
+def _build_gridded(args: argparse.Namespace) -> int:
+    """Build a gridded display artifact for the app's map views."""
+    places = load_places(args.places)
+    if not places:
+        print("No places to build a gridded artifact for.", file=sys.stderr)
+        return 1
+    kwargs: dict[str, Any] = {}
+    if args.chunk_hours is not None:
+        kwargs["chunk_hours"] = args.chunk_hours
+    try:
+        manifest = build_gridded_artifact(
+            places, args.start, args.end, args.output, **kwargs
+        )
+    except (FileExistsError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    grid_block = manifest["grid"]
+    print(
+        f"Wrote a {grid_block['n_rows']}x{grid_block['n_cols']} grid block "
+        f"({grid_block['time_chunk_hours']} h chunks) to {args.output}"
+    )
+    print(
+        f"Observed {manifest['date_range']['observed_start']} through "
+        f"{manifest['date_range']['observed_end']}"
+    )
     return 0
 
 
 def _rain_report(args: argparse.Namespace) -> int:
     """Rank places by rain frequency and print the Chuck table."""
-    # Accepts a catalog places.parquet as well as a CSV, so a report can
-    # use footprint geometry and average over covered nodes rather than
-    # silently falling back to the nearest-node sample.
-    places = load_places(args.places)
-    if args.kind:
-        wanted = set(args.kind)
-        places = [p for p in places if p.kind in wanted]
-    if not places:
-        print("No places to report on.", file=sys.stderr)
+    # Both paths hand back a raw series so the summary, reliability, and
+    # table code below stays in one place. The artifact path deliberately
+    # does not call query.artifact_report: that would duplicate the summary
+    # logic the archive path already needs, and two report builders drift.
+    if args.artifact:
+        prepared = _prepare_artifact_report(args)
+    else:
+        prepared = _prepare_archive_report(args)
+    if prepared is None:
         return 1
 
-    series = extract_series(places, args.start, args.end)
-    if series.height == 0:
-        print(
-            f"No data for {args.start} to {args.end}. The archive's usable "
-            "window starts 2018-01-01.",
-            file=sys.stderr,
-        )
-        return 1
-
+    series, places, start, end = prepared
     table = (
         by_local_month(series, places, threshold_mm_per_hour=args.threshold)
         if args.month is not None
         else place_summary(series, places, threshold_mm_per_hour=args.threshold)
     )
-    table = (
-        scorecard(table, month=args.month) if args.kind else table.sort("wet_fraction")
-    )
+    # The scorecard's sort breaks ties on place_key, so the printed
+    # order is the same every run.
+    table = scorecard(table, month=args.month)
 
     # Reliability is only meaningful for the overall ranking, and it is
     # what tells the reader whether the ordering can be trusted at all.
@@ -405,8 +492,8 @@ def _rain_report(args: argparse.Namespace) -> int:
     _print_table(table, threshold=args.threshold, month=args.month)
 
     metadata = build_metadata(
-        start=args.start,
-        end=args.end,
+        start=start,
+        end=end,
         threshold_mm_per_hour=args.threshold,
         place_count=table.height,
         reliability=reliability,
@@ -415,6 +502,9 @@ def _rain_report(args: argparse.Namespace) -> int:
                 "kind_filter": args.kind or "all",
                 "month": args.month,
                 "columns": table.columns,
+                "source": (
+                    f"artifact:{args.artifact}" if args.artifact else "hrrr-archive"
+                ),
             }
         },
     )
@@ -434,6 +524,88 @@ def _rain_report(args: argparse.Namespace) -> int:
     print(f"\nAttribution: {ARCHIVE_ATTRIBUTION}")
     print(f"Places: {PLACES_ATTRIBUTION}")
     return 0
+
+
+def _prepare_archive_report(
+    args: argparse.Namespace,
+) -> tuple[pl.DataFrame, list[Place], str, str] | None:
+    """Extract from the archive and select the places to report on.
+
+    Returns the series, the selected places, and the date range, or
+    ``None`` after reporting why the report cannot be made.
+    """
+    if not args.start or not args.end:
+        print(
+            "rain-report needs --start and --end when reading from --places.",
+            file=sys.stderr,
+        )
+        return None
+    # Accepts a catalog places.parquet as well as a CSV, so a report can
+    # use footprint geometry and average over covered nodes rather than
+    # silently falling back to the nearest-node sample.
+    places = load_places(args.places)
+    if args.kind:
+        wanted = set(args.kind)
+        places = [p for p in places if p.kind in wanted]
+    if not places:
+        print("No places to report on.", file=sys.stderr)
+        return None
+
+    series = extract_series(places, args.start, args.end)
+    if series.height == 0:
+        print(
+            f"No data for {args.start} to {args.end}. The archive's usable "
+            "window starts 2018-01-01.",
+            file=sys.stderr,
+        )
+        return None
+    return series, places, args.start, args.end
+
+
+def _prepare_artifact_report(
+    args: argparse.Namespace,
+) -> tuple[pl.DataFrame, list[Place], str, str] | None:
+    """Read a built artifact and select the places to report on.
+
+    Reports from prepared hourly data, so no archive read happens and
+    the same artifact always gives the same answer.
+    """
+    try:
+        artifact = load_observation_artifact(args.artifact)
+    except (FileNotFoundError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        return None
+
+    try:
+        series = select_all_observations(
+            artifact,
+            kinds=args.kind,
+            start=args.start,
+            end=args.end,
+        )
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return None
+    if series.height == 0:
+        print(
+            f"No data for {args.start or 'the artifact start'} to "
+            f"{args.end or 'the artifact end'}.",
+            file=sys.stderr,
+        )
+        return None
+
+    wanted = set(args.kind) if args.kind else None
+    places = [
+        place for place in artifact.places if wanted is None or place.kind in wanted
+    ]
+    start = args.start or _iso_or_empty(artifact.observed_start)
+    end = args.end or _iso_or_empty(artifact.observed_end)
+    return series, places, start, end
+
+
+def _iso_or_empty(value: datetime | None) -> str:
+    """Render an optional timestamp for the provenance record."""
+    return value.isoformat() if value is not None else ""
 
 
 def _print_table(table: pl.DataFrame, *, threshold: float, month: int | None) -> None:

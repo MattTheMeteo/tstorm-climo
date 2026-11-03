@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -51,3 +52,20 @@ def test_s3_release_objects_upload_before_latest_pointer(tmp_path) -> None:
 def test_s3_publisher_rejects_incomplete_release(tmp_path) -> None:
     with pytest.raises(ValueError, match="not a catalog release"):
         publish_catalog_to_s3(tmp_path, "weather-catalogs", client=FakeS3())
+
+
+def test_s3_publisher_says_how_to_install_boto3(tmp_path, monkeypatch) -> None:
+    """boto3 is an optional extra, so the core install cannot publish.
+
+    The error has to name the extra, or the user is left guessing.
+    """
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "places.parquet").write_bytes(b"parquet-data")
+    (catalog / "manifest.json").write_text(json.dumps({"generated_at": "x"}))
+    # A None entry in sys.modules makes ``import boto3`` fail the way an
+    # absent package does.
+    monkeypatch.setitem(sys.modules, "boto3", None)
+
+    with pytest.raises(RuntimeError, match=r"tstorm-climo\[catalog-s3\]"):
+        publish_catalog_to_s3(catalog, "weather-catalogs")

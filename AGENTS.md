@@ -7,7 +7,7 @@ no forecast. I noted that would be improbable but not impossible and I'd see if 
 which of the North Shore Massachusetts golf courses have been the wettest.
 
 This repository has now evolved into an app that let's users view the raininess of a given golf course
-or up to 2-!
+or up to 20!
 
 ## Build
 For code, please question assumptions and make sure you're confident in your decisions.
@@ -31,6 +31,8 @@ fill the code base false confidence.
 It's important to pass type checks but it's also important how they pass. Simply wrapping a call in
 `typing.cast` or a similar call and moving on should be used as a last resort; types exist because they prevent bugs.
 
+For type checking, let's use ty. Marimo notebooks should run their own "marimo check" before each one.
+We should also always be checking that we're using rust as our linter.
 ## Goal
 Ultimately, I'd like to host a marimo notebook or even a site that shows our analysis of the
 thunderstorm / rain climatologies of North Shore golf courses.

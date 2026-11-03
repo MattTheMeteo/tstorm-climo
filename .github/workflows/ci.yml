@@ -33,6 +33,9 @@ jobs:
       - name: Format check
         run: uv run ruff format --check
 
+      - name: Marimo check
+        run: uv run --group app marimo check app/rain_app.py
+
       - name: Type check
         run: uv run ty check
 

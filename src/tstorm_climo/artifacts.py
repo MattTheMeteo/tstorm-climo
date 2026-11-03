@@ -1,14 +1,38 @@
-"""Build reusable hourly observation artifacts for interactive analysis."""
+"""Build and read reusable hourly observation artifacts (schema v3).
+
+An artifact is an immutable directory that serves the interactive app
+without touching the HRRR archive: a place-clustered ``observations/``
+directory of slimmed hourly rows, a ``places.parquet`` snapshot carrying
+the per-place static columns, and a ``manifest.json`` describing all of
+it.
+
+The layout is optimized for the app's two queries -- the opening map (one
+row per place) and a bounded drill-in of at most :data:`MAX_SELECTED_PLACES`
+places -- so:
+
+- the hourly table stores only the columns that change hour to hour
+  (``place_key``/``time_utc``/``variable``/``value``/``valid``);
+- it is sorted by place and split into shards, so a ``place_key``
+  predicate skips whole row groups; and
+- everything constant per place (timezone, anchor node, sampling identity)
+  lives once in ``places.parquet`` and is joined back at read time.
+
+The builder is :func:`build_hourly_observation_artifact`; the reader is
+:func:`load_observation_artifact`. They live in the same module because
+they share one format, and a reader that drifted from its writer would be
+worse than no reader at all.
+"""
 
 from __future__ import annotations
 
-import hashlib
 import json
+import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, cast
+from typing import Any
 
 import polars as pl
 
@@ -20,52 +44,97 @@ from tstorm_climo.extract import (
     TIME_COLUMN,
     VALID_COLUMN,
     extract_series,
-    sampling_cells,
-    sampling_frame,
 )
-from tstorm_climo.grid import Grid
-from tstorm_climo.hrrr import (
-    HRRR_ANALYSIS_DATASET_ID,
-    MIN_VALID_DATE,
-    PRECIPITATION_VARIABLE,
-    Opener,
-    open_analysis,
-)
-from tstorm_climo.places import Place
+from tstorm_climo.hrrr import HRRR_ANALYSIS_DATASET_ID, PRECIPITATION_VARIABLE, Opener
+from tstorm_climo.places import PLACE_KEY_COLUMN, Place, places_from_frame
 from tstorm_climo.provenance import (
     ARCHIVE_ATTRIBUTION,
     ARCHIVE_LICENSE,
     PLACES_ATTRIBUTION,
     PLACES_LICENSE,
+    isoformat_timestamp,
+    parse_timestamp,
 )
 
-# v2 adds ``sampling``/``n_cells``/``sampling_key`` to the observations
-# and a ``sampling.parquet`` table recording every node a place was
-# averaged over. v1 recorded only the anchor node, which stops being the
-# sampled set once a footprint applies.
-ARTIFACT_SCHEMA_VERSION = 2
+ARTIFACT_SCHEMA_VERSION = 3
+ARTIFACT_TYPE = "hourly_observations"
+MANIFEST_FILE = "manifest.json"
+OBSERVATIONS_DIR = "observations"
+PLACES_FILE = "places.parquet"
+
 RAIN_RATE_VARIABLE = "rain_rate"
 TIME_UTC_COLUMN = "time_utc"
 VALUE_COLUMN = "value"
+VARIABLE_COLUMN = "variable"
 
-OBSERVATION_COLUMNS = (
-    "place_key",
-    TIME_UTC_COLUMN,
-    "variable",
-    VALUE_COLUMN,
-    VALID_COLUMN,
+# The largest selection the app serves at once. This is an architectural
+# guarantee, not just UX: it bounds the worst-case drill-in read to this
+# many places' hourly rows.
+MAX_SELECTED_PLACES = 20
+
+# Columns constant per place, stored once in ``places.parquet`` and joined
+# back at read time. ``grid_lat``/``grid_lon`` are dropped entirely: the
+# summary layer never reads them.
+STATIC_COLUMNS = (
+    "tz_name",
     "y_index",
     "x_index",
-    "grid_lat",
-    "grid_lon",
     "snap_distance_km",
-    "tz_name",
     SAMPLING_COLUMN,
     N_CELLS_COLUMN,
     SAMPLING_KEY_COLUMN,
 )
 
-SAMPLING_FILE = "sampling.parquet"
+# The only columns that change hour to hour.
+SLIM_COLUMNS = (
+    PLACE_KEY_COLUMN,
+    TIME_UTC_COLUMN,
+    VARIABLE_COLUMN,
+    VALUE_COLUMN,
+    VALID_COLUMN,
+)
+
+# The artifact stores every variable's reading in one ``value`` column and
+# discriminates with ``variable``. The analysis layer wants a column named
+# after the quantity, so the mapping is applied when one variable is
+# selected. Only variables listed here can be interpreted; anything else
+# is rejected rather than reported in the wrong units.
+VARIABLE_VALUE_COLUMNS: dict[str, str] = {
+    RAIN_RATE_VARIABLE: RATE_COLUMN,
+}
+
+
+@dataclass(frozen=True)
+class ObservationArtifact:
+    """A loaded artifact, ready for bounded lazy queries.
+
+    Attributes:
+        directory: Base path or URL the artifact was read from.
+        manifest: The parsed ``manifest.json``.
+        observations: A lazy scan over the sharded observations. Holding
+            this is cheap (it is a query plan, not data).
+        places: The place catalog, one ``Place`` per row.
+        static: Per-place static columns (``place_key`` plus the columns
+            in :data:`STATIC_COLUMNS`), for the read-time join-back.
+    """
+
+    directory: str | Path
+    manifest: dict[str, Any]
+    observations: pl.LazyFrame
+    places: list[Place]
+    static: pl.DataFrame
+
+    @property
+    def observed_start(self) -> datetime | None:
+        """First observed timestamp, or ``None`` if the manifest lacks one."""
+        return parse_timestamp(
+            self.manifest.get("date_range", {}).get("observed_start")
+        )
+
+    @property
+    def observed_end(self) -> datetime | None:
+        """Last observed timestamp, or ``None`` if the manifest lacks one."""
+        return parse_timestamp(self.manifest.get("date_range", {}).get("observed_end"))
 
 
 def build_hourly_observation_artifact(
@@ -75,20 +144,22 @@ def build_hourly_observation_artifact(
     output_dir: str | Path,
     *,
     opener: Opener | None = None,
+    shard_count: int = 8,
+    row_group_size: int | None = None,
 ) -> dict[str, Any]:
-    """Extract and save hourly rain observations plus their place catalog.
-
-    The artifact is built in a temporary sibling directory and renamed into
-    place only after all files are written. Existing output directories are
-    never overwritten.
+    """Extract, slim, place-cluster, and write an observation artifact.
 
     Args:
         places: Places to extract, with unique stable ``place_key`` values.
-        start: Requested inclusive start time.
-        end: Requested inclusive end time.
-        output_dir: New directory for ``observations.parquet``,
-            ``places.parquet``, ``sampling.parquet``, and ``manifest.json``.
-        opener: Optional HRRR opener, primarily for tests.
+        start: Inclusive start of the time range.
+        end: Inclusive end of the time range.
+        output_dir: New directory for ``observations/``, ``places.parquet``
+            and ``manifest.json``. Must not already exist.
+        opener: Optional HRRR opener, for tests.
+        shard_count: Upper bound on the number of observation shard files.
+        row_group_size: Rows per Parquet row group. Aligning this to one
+            place's worth of hours lets a ``place_key`` predicate skip whole
+            row groups; ``None`` leaves Polars' default.
 
     Returns:
         The JSON-serializable manifest written to the artifact directory.
@@ -99,46 +170,33 @@ def build_hourly_observation_artifact(
     """
     if not places:
         raise ValueError("cannot build an observation artifact with no places")
-
     destination = Path(output_dir)
     if destination.exists():
         raise FileExistsError(f"artifact output already exists: {destination}")
-
     destination.parent.mkdir(parents=True, exist_ok=True)
-    # Build the grid here as well as inside extract_series so the sampling
-    # table can be written without re-extracting. Opening the archive is
-    # lazy, so the second open costs metadata only.
-    grid = Grid.from_dataset(open_analysis(opener=opener))
-    series = extract_series(places, start, end, grid=grid, opener=opener)
-    if series.height == 0:
-        raise ValueError(
-            f"no observations for {start} to {end}; the usable archive "
-            f"window starts {MIN_VALID_DATE}"
-        )
-    sampling = sampling_frame(places, sampling_cells(grid, places))
 
-    observations = (
-        series.rename({TIME_COLUMN: TIME_UTC_COLUMN, RATE_COLUMN: VALUE_COLUMN})
-        .with_columns(pl.lit(RAIN_RATE_VARIABLE).alias("variable"))
-        .select(OBSERVATION_COLUMNS)
+    series = extract_series(places, start, end, opener=opener)
+    if series.height == 0:
+        raise ValueError(f"no observations for {start} to {end}")
+
+    # Static per-place columns, one row per place, in stable key order.
+    static = (
+        series.select([PLACE_KEY_COLUMN, *STATIC_COLUMNS])
+        .unique(subset=[PLACE_KEY_COLUMN], keep="first")
+        .sort(PLACE_KEY_COLUMN)
     )
-    sorted_places = sorted(places, key=lambda item: item.place_key)
-    # JSON-safe records for the content hash; geometry is hex-encoded so
-    # the hash stays deterministic and order-independent.
-    json_records = [
-        {
-            "place_key": place.place_key,
-            **place.model_dump(mode="json", exclude={"geometry_wkb"}),
-            "geometry_wkb": place.geometry_wkb.hex() if place.geometry_wkb else None,
-        }
-        for place in sorted_places
-    ]
-    catalog_hash = _catalog_hash(json_records)
-    places_frame = _places_frame(sorted_places)
-    valid_rows = int(observations[VALID_COLUMN].sum())
-    times = observations[TIME_UTC_COLUMN]
+
+    # The slim, place-clustered hourly table.
+    slim = (
+        series.rename({TIME_COLUMN: TIME_UTC_COLUMN, RATE_COLUMN: VALUE_COLUMN})
+        .with_columns(pl.lit(RAIN_RATE_VARIABLE).alias(VARIABLE_COLUMN))
+        .select(list(SLIM_COLUMNS))
+        .sort([PLACE_KEY_COLUMN, TIME_UTC_COLUMN])
+    )
+
+    valid_rows = int(slim[VALID_COLUMN].sum())
     manifest: dict[str, Any] = {
-        "artifact_type": "hourly_observations",
+        "artifact_type": ARTIFACT_TYPE,
         "schema_version": ARTIFACT_SCHEMA_VERSION,
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "dataset": {
@@ -149,51 +207,24 @@ def build_hourly_observation_artifact(
             "id": RAIN_RATE_VARIABLE,
             "value_column": VALUE_COLUMN,
             "units": "mm h-1",
-            "description": "Hourly-average precipitation rate.",
-            "threshold_applied": None,
         },
         "date_range": {
             "requested_start": start,
             "requested_end": end,
-            "observed_start": _isoformat(cast(datetime | None, times.min())),
-            "observed_end": _isoformat(cast(datetime | None, times.max())),
-            "analysis_window_start": MIN_VALID_DATE,
-        },
-        "sampling": (
-            "Footprint-weighted average over covered grid nodes where a "
-            "place carries polygon geometry; nearest grid point otherwise."
-        ),
-        "sampling_cells": {
-            "file": SAMPLING_FILE,
-            "description": (
-                "One row per (place, grid node) actually averaged. "
-                "y_index/x_index/grid_lat/grid_lon in observations.parquet "
-                "are the place's anchor node, not this set."
+            "observed_start": isoformat_timestamp(
+                slim.select(pl.col(TIME_UTC_COLUMN).min()).item()
             ),
-            "row_count": sampling.height,
-            "columns": list(sampling.columns),
-            "footprint_places": int(
-                sampling.filter(pl.col(SAMPLING_COLUMN) == "footprint")
-                .get_column("place_key")
-                .n_unique()
-            ),
-            "point_places": int(
-                sampling.filter(pl.col(SAMPLING_COLUMN) == "point")
-                .get_column("place_key")
-                .n_unique()
+            "observed_end": isoformat_timestamp(
+                slim.select(pl.col(TIME_UTC_COLUMN).max()).item()
             ),
         },
-        "place_catalog": {
-            "place_count": len(places),
-            "content_sha256": catalog_hash,
-        },
-        "observations": {
-            "row_count": observations.height,
-            "valid_row_count": valid_rows,
-            "invalid_row_count": observations.height - valid_rows,
-            "valid_fraction": valid_rows / observations.height,
-            "columns": list(OBSERVATION_COLUMNS),
-        },
+        "place_count": len(places),
+        "row_count": slim.height,
+        "valid_fraction": valid_rows / slim.height,
+        "shard_count": shard_count,
+        "observations_dir": OBSERVATIONS_DIR,
+        "observations_columns": list(SLIM_COLUMNS),
+        "static_columns": list(STATIC_COLUMNS),
         "attribution": {
             "archive": ARCHIVE_ATTRIBUTION,
             "archive_license": ARCHIVE_LICENSE,
@@ -206,10 +237,11 @@ def build_hourly_observation_artifact(
         prefix=f".{destination.name}.tmp-", dir=destination.parent
     ) as temporary:
         staging = Path(temporary)
-        observations.write_parquet(staging / "observations.parquet")
-        places_frame.write_parquet(staging / "places.parquet")
-        sampling.write_parquet(staging / SAMPLING_FILE)
-        (staging / "manifest.json").write_text(
+        observations_dir = staging / OBSERVATIONS_DIR
+        observations_dir.mkdir()
+        _write_shards(slim, observations_dir, shard_count, row_group_size)
+        _places_frame(places, static).write_parquet(staging / PLACES_FILE)
+        (staging / MANIFEST_FILE).write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
@@ -220,31 +252,129 @@ def build_hourly_observation_artifact(
     return manifest
 
 
-def _places_frame(places: Sequence[Place]) -> pl.DataFrame:
-    """The places table written beside the observations.
+def load_observation_artifact(
+    directory: str | Path, *, storage_options: dict[str, Any] | None = None
+) -> ObservationArtifact:
+    """Load an artifact, returning a lazy scan over the observations.
 
-    Scalar fields mirror the CSV representation; geometry is kept as a
-    binary ``geometry_wkb`` column so footprints survive the parquet
-    round-trip, with a stable Binary dtype even when every place is a
-    point with no footprint.
+    The observations are scanned lazily; the manifest, places, and static
+    columns are read eagerly because they are tiny (one row per place).
+    ``directory`` may be a local path or an ``s3://``/``https://`` base;
+    ``storage_options`` is forwarded to Polars' cloud reader for the two
+    parquet reads (the manifest is fetched over HTTPS or boto3).
+
+    Raises:
+        ValueError: If the manifest is not an observation artifact, or its
+            schema version is not readable by this build.
     """
-    scalar = [
-        {"place_key": place.place_key, **place.model_dump(exclude={"geometry_wkb"})}
-        for place in places
-    ]
-    return pl.DataFrame(scalar).with_columns(
-        pl.Series("geometry_wkb", [p.geometry_wkb for p in places], dtype=pl.Binary)
+    base = str(directory)
+    if "://" not in base and not (Path(base) / MANIFEST_FILE).is_file():
+        raise FileNotFoundError(
+            f"not an hourly observation artifact directory: {directory} "
+            f"(expected {MANIFEST_FILE})"
+        )
+    manifest = json.loads(_read_text(_join(base, MANIFEST_FILE)))
+    if manifest.get("artifact_type") != ARTIFACT_TYPE:
+        raise ValueError(
+            f"not an hourly observation artifact: {directory} "
+            f"(artifact_type={manifest.get('artifact_type')!r})"
+        )
+    if manifest.get("schema_version") != ARTIFACT_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported artifact schema version "
+            f"{manifest.get('schema_version')!r} in {directory}"
+        )
+
+    places_uri = _join(base, PLACES_FILE)
+    places_frame = pl.read_parquet(places_uri, storage_options=storage_options)
+    static = places_frame.select([PLACE_KEY_COLUMN, *STATIC_COLUMNS])
+
+    observations = pl.scan_parquet(
+        _join(base, f"{OBSERVATIONS_DIR}/*.parquet"),
+        storage_options=storage_options,
+    )
+    return ObservationArtifact(
+        directory=directory,
+        manifest=manifest,
+        observations=observations,
+        places=places_from_frame(places_frame),
+        static=static,
     )
 
 
-def _catalog_hash(records: list[dict[str, Any]]) -> str:
-    """Hash canonical place records, independent of input row order."""
-    payload = json.dumps(
-        records, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+def _write_shards(
+    slim: pl.DataFrame,
+    directory: Path,
+    shard_count: int,
+    row_group_size: int | None,
+) -> None:
+    """Write the place-sorted observations as contiguous place shards.
+
+    ``slim`` is already sorted by ``place_key`` (then time), so splitting
+    the unique keys into contiguous chunks gives each shard a known
+    ``place_key`` range -- which is exactly what lets the reader skip whole
+    shards for a ``place_key`` predicate.
+    """
+    keys = slim[PLACE_KEY_COLUMN].unique(maintain_order=True).to_list()
+    shard_size = max(1, math.ceil(len(keys) / shard_count))
+    for index in range(0, len(keys), shard_size):
+        shard_keys = keys[index : index + shard_size]
+        part = slim.filter(pl.col(PLACE_KEY_COLUMN).is_in(shard_keys))
+        part.write_parquet(
+            directory / f"shard-{index // shard_size:04d}.parquet",
+            row_group_size=row_group_size,
+        )
 
 
-def _isoformat(value: datetime | None) -> str | None:
-    """Serialize a Polars datetime scalar as an ISO timestamp."""
-    return value.isoformat() if value is not None else None
+def _places_frame(places: Sequence[Place], static: pl.DataFrame) -> pl.DataFrame:
+    """One row per place: identity columns plus the per-place static ones."""
+    ordered = sorted(places, key=lambda place: place.place_key)
+    identity = pl.DataFrame(
+        [
+            {
+                PLACE_KEY_COLUMN: place.place_key,
+                **place.model_dump(exclude={"geometry_wkb"}),
+            }
+            for place in ordered
+        ]
+    ).with_columns(
+        pl.Series(
+            "geometry_wkb", [place.geometry_wkb for place in ordered], dtype=pl.Binary
+        )
+    )
+    return identity.join(static, on=PLACE_KEY_COLUMN, how="left")
+
+
+def _join(base: str | Path, relative: str) -> str:
+    """Join a base directory or URL with a relative path."""
+    text = str(base)
+    if "://" in text:
+        return f"{text.rstrip('/')}/{relative}"
+    return str(Path(text) / relative)
+
+
+def _read_text(path: str) -> str:
+    """Read a small text file from a local path or a URL.
+
+    The manifest is tiny, so a hosted deployment fetches it over HTTP(S)
+    from the public bucket; ``s3://`` goes through the optional boto3
+    extra's standard credential chain.
+    """
+    if path.startswith("s3://"):
+        try:
+            import boto3
+        except ImportError as error:
+            raise RuntimeError(
+                "reading an s3:// manifest requires the optional dependency "
+                "tstorm-climo[catalog-s3]"
+            ) from error
+
+        bucket, key = path[len("s3://") :].split("/", 1)
+        body = boto3.client("s3").get_object(Bucket=bucket, Key=key)["Body"]
+        return body.read().decode("utf-8")
+    if "://" in path:
+        import urllib.request
+
+        with urllib.request.urlopen(path) as response:
+            return response.read().decode("utf-8")
+    return Path(path).read_text(encoding="utf-8")

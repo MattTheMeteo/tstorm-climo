@@ -24,7 +24,6 @@ from tstorm_climo.extract import (
     SamplingCell,
     extract_series,
     sampling_cells,
-    sampling_frame,
     sampling_key,
 )
 from tstorm_climo.grid import Grid, PlaceOffGridError
@@ -496,23 +495,6 @@ def test_sampling_cells_keeps_anchor_and_footprint_apart() -> None:
     assert entries[1].sampling == POINT_SAMPLING
     assert entries[1].n_cells == 1
     assert entries[1].cells[0].key == entries[1].anchor.key
-
-
-def test_sampling_frame_records_every_node() -> None:
-    lat, lon = make_coords()
-    grid = Grid(lat, lon)
-    poly = wkb(box_wkt(lat, lon, [2, 2], [3, 4]))
-    footprint = a_place(float(lat[2, 3]), float(lon[2, 3]), "Footprint", osm_id=1)
-    footprint = footprint.model_copy(update={"geometry_wkb": poly})
-
-    frame = sampling_frame([footprint], sampling_cells(grid, [footprint]))
-
-    assert frame.height == 2
-    assert frame["sampling"].unique().to_list() == [FOOTPRINT_SAMPLING]
-    assert frame["n_cells"].unique().to_list() == [2]
-    assert frame["sampling_key"].n_unique() == 1
-    assert frame["weight"].sum() == pytest.approx(1.0)
-    assert set(frame["place_key"].to_list()) == {footprint.place_key}
 
 
 def test_series_carries_sampling_columns_for_footprints() -> None:

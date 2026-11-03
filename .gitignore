@@ -22,3 +22,6 @@ coverage.xml
 artifacts/
 *.parquet
 *.meta.json
+
+# marimo session cache
+app/__marimo__/

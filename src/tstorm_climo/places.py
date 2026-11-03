@@ -14,6 +14,10 @@ EARTH_RADIUS_KM = 6371.0
 # Fallback zone when a coordinate cannot be resolved to one.
 UTC_TIMEZONE = "UTC"
 
+# The stable place identity travels under this field name in parquet
+# frames and catalog records; the value is ``Place.place_key``.
+PLACE_KEY_COLUMN = "place_key"
+
 
 class Place(BaseModel):
     """A point of interest on the map (e.g. a golf course or beach).
@@ -194,14 +198,19 @@ def load_places(path: str) -> list[Place]:
 
 
 def from_catalog_parquet(path: str) -> list[Place]:
-    """Load places from a catalog release's ``places.parquet``.
+    """Load places from a catalog release's ``places.parquet``."""
+    return places_from_frame(pl.read_parquet(path))
+
+
+def places_from_frame(frame: pl.DataFrame) -> list[Place]:
+    """Rebuild :class:`Place` objects from a catalog-style frame.
 
     The catalog stores a string ``osm_id`` and full footprint geometry;
     both are normalized back into :class:`Place`. The timezone is
-    recomputed from the representative point because the catalog does not
-    carry one.
+    recomputed from the representative point when the frame does not carry
+    one, but a frame that *does* -- the place snapshot written beside an
+    observation artifact -- keeps it.
     """
-    frame = pl.read_parquet(path)
     places: list[Place] = []
     for row in frame.iter_rows(named=True):
         wkb = row.get("geometry_wkb")
@@ -215,7 +224,7 @@ def from_catalog_parquet(path: str) -> list[Place]:
                 kind=row["kind"],
                 lat=lat,
                 lon=lon,
-                timezone=timezone_at(lat, lon),
+                timezone=row.get("timezone") or timezone_at(lat, lon),
                 geometry_wkb=bytes(wkb) if wkb is not None else None,
             )
         )

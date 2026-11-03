@@ -58,7 +58,7 @@ from tstorm_climo.hrrr import (
     open_analysis,
     to_mm_per_hour,
 )
-from tstorm_climo.places import Place
+from tstorm_climo.places import PLACE_KEY_COLUMN, Place
 
 # Column names of the returned frame, for callers that build on it.
 TIME_COLUMN = "time"
@@ -79,7 +79,7 @@ FOOTPRINT_SAMPLING = "footprint"
 POINT_SAMPLING = "point"
 
 SCHEMA: dict[str, DataType | DataTypeClass] = {
-    "place_key": pl.String,
+    PLACE_KEY_COLUMN: pl.String,
     TIME_COLUMN: pl.Datetime("us", "UTC"),
     RATE_COLUMN: pl.Float64,
     VALID_COLUMN: pl.Boolean,
@@ -89,18 +89,6 @@ SCHEMA: dict[str, DataType | DataTypeClass] = {
     "grid_lon": pl.Float64,
     "snap_distance_km": pl.Float64,
     "tz_name": pl.String,
-    SAMPLING_COLUMN: pl.String,
-    N_CELLS_COLUMN: pl.Int64,
-    SAMPLING_KEY_COLUMN: pl.String,
-}
-
-SAMPLING_FRAME_SCHEMA: dict[str, DataType | DataTypeClass] = {
-    "place_key": pl.String,
-    "y_index": pl.Int64,
-    "x_index": pl.Int64,
-    "grid_lat": pl.Float64,
-    "grid_lon": pl.Float64,
-    "weight": pl.Float64,
     SAMPLING_COLUMN: pl.String,
     N_CELLS_COLUMN: pl.Int64,
     SAMPLING_KEY_COLUMN: pl.String,
@@ -221,34 +209,6 @@ def sampling_key(cells: Sequence[SamplingCell]) -> str:
     return ",".join(f"{y}x{x}" for y, x in sorted(cell.key for cell in cells))
 
 
-def sampling_frame(
-    places: Sequence[Place], sampling: Sequence[PlaceSampling]
-) -> pl.DataFrame:
-    """Flatten per-place sampling nodes into one row per (place, node).
-
-    The result is the authoritative record of what each place was
-    sampled from. It is static per place, so it is written once beside
-    the observations rather than repeated on every hourly row.
-    """
-    rows: list[dict[str, Any]] = []
-    for place, entry in zip(places, sampling, strict=True):
-        for cell in entry.cells:
-            rows.append(
-                {
-                    "place_key": place.place_key,
-                    "y_index": cell.y_index,
-                    "x_index": cell.x_index,
-                    "grid_lat": cell.grid_lat,
-                    "grid_lon": cell.grid_lon,
-                    "weight": cell.weight,
-                    SAMPLING_COLUMN: cell.sampling,
-                    N_CELLS_COLUMN: entry.n_cells,
-                    SAMPLING_KEY_COLUMN: entry.key,
-                }
-            )
-    return pl.DataFrame(rows, schema=SAMPLING_FRAME_SCHEMA)
-
-
 def extract_series(
     places: Sequence[Place],
     start: str,
@@ -291,7 +251,7 @@ def extract_series(
     # Footprint nodes when a polygon covers any, else the anchor node.
     sampling = sampling_cells(active_grid, places)
 
-    row_slice, col_slice = _sampling_bounds(sampling, active_grid)
+    row_slice, col_slice = sampling_bounds(sampling, active_grid)
     # Slice time and space *before* converting units: converting first
     # would materialize the whole 748 GiB archive (the read is lazy until
     # a value is needed, and the multiply would force it).
@@ -326,8 +286,7 @@ def _to_frame(
     node nearest its representative point -- and keep their original
     meaning for backwards compatibility. They are not the nodes that
     were averaged once a footprint applies; ``n_cells`` and
-    ``sampling_key`` say what actually was, and :func:`sampling_frame`
-    holds the full node list.
+    ``sampling_key`` say what actually was.
     """
     n_places = len(places)
     n_times = times.size
@@ -346,7 +305,7 @@ def _to_frame(
 
     return pl.DataFrame(
         {
-            "place_key": pl.Series(place_keys, dtype=pl.String),
+            PLACE_KEY_COLUMN: pl.Series(place_keys, dtype=pl.String),
             TIME_COLUMN: pl.Series(frame_times).cast(SCHEMA[TIME_COLUMN]),
             RATE_COLUMN: pl.Series(np.where(valid, rates, np.nan), dtype=pl.Float64),
             VALID_COLUMN: pl.Series(valid, dtype=pl.Boolean),
@@ -388,10 +347,13 @@ def _to_frame(
     )
 
 
-def _sampling_bounds(
+def sampling_bounds(
     sampling: Sequence[PlaceSampling], grid: Grid
 ) -> tuple[slice, slice]:
     """Row/column slices covering every sampled node.
+
+    Shared with the gridded-display builder, which reads the same block
+    the per-place extraction reads.
 
     Every index comes from :meth:`Grid.cover_cells` or
     :meth:`Grid.locate_places`, so they are already in range and no

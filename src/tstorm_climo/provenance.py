@@ -105,6 +105,22 @@ def write_metadata(path: str | Path, metadata: dict[str, Any]) -> Path:
     return sidecar
 
 
+def isoformat_timestamp(value: datetime | None) -> str | None:
+    """Serialize a timestamp as an ISO string, or ``None``."""
+    return value.isoformat() if value is not None else None
+
+
+def parse_timestamp(value: Any) -> datetime | None:
+    """Parse an ISO timestamp from a manifest, tolerating absent values."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
 def format_caveats(metadata: dict[str, Any]) -> str:
     """Render the caveats for display under a report."""
     lines = []

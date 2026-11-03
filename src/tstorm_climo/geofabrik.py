@@ -22,6 +22,7 @@ from tstorm_climo.catalog import (
     match_tags,
     save_places,
 )
+from tstorm_climo.places import PLACE_KEY_COLUMN
 
 GEOFABRIK_BASE_URL = "https://download.geofabrik.de"
 _REGION_PATTERN = re.compile(r"[a-z0-9-]+(?:/[a-z0-9-]+)*\Z")
@@ -153,7 +154,7 @@ def extract_geofabrik_places(
 
         records.append(
             {
-                "place_key": f"osm:{osm_type}:{osm_id}",
+                PLACE_KEY_COLUMN: f"osm:{osm_type}:{osm_id}",
                 "osm_type": osm_type,
                 "osm_id": str(osm_id),
                 "name": tags.get("name", ""),
@@ -177,7 +178,7 @@ def extract_geofabrik_places(
             pl.col("lat").is_between(south, north)
             & pl.col("lon").is_between(west, east)
         )
-    return places.select(list(PLACES_SCHEMA)).sort("place_key")
+    return places.select(list(PLACES_SCHEMA)).sort(PLACE_KEY_COLUMN)
 
 
 def build_geofabrik_catalog(

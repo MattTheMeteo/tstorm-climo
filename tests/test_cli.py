@@ -205,8 +205,9 @@ def test_build_observations_command_runs_builder(monkeypatch, tmp_path, capsys) 
     places = [object()]
     monkeypatch.setattr(cli_module, "load_places", lambda _path: places)
     manifest = {
-        "observations": {"row_count": 2, "valid_fraction": 0.5},
-        "place_catalog": {"place_count": 1},
+        "row_count": 2,
+        "place_count": 1,
+        "valid_fraction": 0.5,
         "date_range": {
             "observed_start": "2025-07-15T00:00:00+00:00",
             "observed_end": "2025-07-15T01:00:00+00:00",
@@ -238,6 +239,68 @@ def test_build_observations_command_runs_builder(monkeypatch, tmp_path, capsys) 
     )
     assert calls == [(places, "2025-07-15", "2025-07-15", str(output))]
     assert "2 observations" in capsys.readouterr().out
+
+
+def test_build_gridded_parses_arguments() -> None:
+    args = build_parser().parse_args(
+        [
+            "build-gridded",
+            "--places",
+            "places.csv",
+            "--start",
+            "2025-11-01",
+            "--end",
+            "2026-11-01",
+            "--output",
+            "artifacts/gridded",
+            "--chunk-hours",
+            "168",
+        ]
+    )
+    assert args.command == "build-gridded"
+    assert args.places == "places.csv"
+    assert args.chunk_hours == 168
+    assert args.output == "artifacts/gridded"
+
+
+def test_build_gridded_command_runs_builder(monkeypatch, tmp_path, capsys) -> None:
+    import tstorm_climo.cli as cli_module
+
+    places = [object()]
+    monkeypatch.setattr(cli_module, "load_places", lambda _path: places)
+    manifest = {
+        "grid": {"n_rows": 21, "n_cols": 20, "time_chunk_hours": 744},
+        "date_range": {
+            "observed_start": "2025-11-01T00:00:00+00:00",
+            "observed_end": "2026-11-01T00:00:00+00:00",
+        },
+    }
+    calls = []
+
+    def build(observed_places, start, end, output, **kwargs):
+        calls.append((observed_places, start, end, output, kwargs))
+        return manifest
+
+    monkeypatch.setattr(cli_module, "build_gridded_artifact", build)
+    output = tmp_path / "gridded"
+    assert (
+        main(
+            [
+                "build-gridded",
+                "--places",
+                "places.csv",
+                "--start",
+                "2025-11-01",
+                "--end",
+                "2026-11-01",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert calls == [(places, "2025-11-01", "2026-11-01", str(output), {})]
+    assert "21x20 grid block" in capsys.readouterr().out
 
 
 def test_main_unknown_command(capsys) -> None:

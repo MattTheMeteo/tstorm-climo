@@ -1,8 +1,10 @@
-"""Tests for persisted hourly observation artifacts, without network access."""
+"""Tests for the v3 observation artifact: build, load, and error handling."""
 
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -11,255 +13,232 @@ import pytest
 import xarray as xr
 
 from tstorm_climo.artifacts import (
-    OBSERVATION_COLUMNS,
-    RAIN_RATE_VARIABLE,
+    ARTIFACT_SCHEMA_VERSION,
+    ARTIFACT_TYPE,
+    OBSERVATIONS_DIR,
+    SLIM_COLUMNS,
+    STATIC_COLUMNS,
     build_hourly_observation_artifact,
+    load_observation_artifact,
 )
-from tstorm_climo.places import Place
+from tstorm_climo.places import PLACE_KEY_COLUMN, Place
+
+# The 3x3 grid the synthetic archive installs. Node (row, col).
+GRID_LAT = np.broadcast_to(42.0 - np.arange(3)[:, None] * 0.027, (3, 3)).copy()
+GRID_LON = np.broadcast_to(-71.0 + np.arange(3)[None, :] * 0.036, (3, 3)).copy()
+
+HOURS = 6
+START = "2025-07-15"
+
+MM_PER_HOUR = {
+    (1, 1): [0.20, 0.00, 0.30, 0.00, 0.10, 0.00],
+    (2, 2): [0.00, 0.40, 0.00, 0.00, 0.00, 0.00],
+    (1, 0): [0.00, 0.00, 0.00, 0.00, 0.00, 0.00],
+}
 
 
 def make_opener():
-    lat = 42.0 - np.arange(3)[:, None] * 0.027
-    lon = -71.0 + np.arange(3)[None, :] * 0.036
-    lat = np.broadcast_to(lat, (3, 3)).copy()
-    lon = np.broadcast_to(lon, (3, 3)).copy()
-    rate = np.zeros((2, 3, 3), dtype=np.float32)
-    rate[:, 1, 1] = [1e-5, np.nan]
+    values = np.zeros((HOURS, 3, 3), dtype=np.float32)
+    for (row, col), series in MM_PER_HOUR.items():
+        values[:, row, col] = np.array(series) / 3600.0
 
-    def opener(dataset_id, **kwargs):
-        assert dataset_id == "noaa-hrrr-analysis"
-        assert kwargs.get("chunks") is None
+    def opener(dataset_id: str, **kwargs):
         return xr.Dataset(
-            {"precipitation_surface": (("time", "y", "x"), rate)},
+            {"precipitation_surface": (("time", "y", "x"), values)},
             coords={
-                "time": pd.to_datetime(["2025-07-15T00", "2025-07-15T01"]),
+                "time": pd.date_range(f"{START}T00", periods=HOURS, freq="h"),
                 "y": np.arange(3),
                 "x": np.arange(3),
-                "latitude": (("y", "x"), lat),
-                "longitude": (("y", "x"), lon),
+                "latitude": (("y", "x"), GRID_LAT),
+                "longitude": (("y", "x"), GRID_LON),
             },
         )
 
     return opener
 
 
-def a_place(osm_id: int = 1, *, lon: float = -70.964) -> Place:
+def course(osm_id: int, row: int, col: int) -> Place:
     return Place(
         osm_type="way",
         osm_id=osm_id,
         name=f"Course {osm_id}",
         kind="golf_course",
-        lat=41.973,
-        lon=lon,
+        lat=float(GRID_LAT[row, col]),
+        lon=float(GRID_LON[row, col]),
         timezone="America/New_York",
     )
 
 
-def _wkb(wkt: str) -> bytes:
-    """Encode WKT as WKB using DuckDB's spatial extension."""
-    import duckdb
+PLACES = [
+    course(1, 1, 1),
+    course(2, 2, 2),
+    Place(
+        osm_type="node",
+        osm_id=99,
+        name="A Beach",
+        kind="beach",
+        lat=float(GRID_LAT[1, 0]),
+        lon=float(GRID_LON[1, 0]),
+        timezone="America/New_York",
+    ),
+]
 
-    con = duckdb.connect()
-    try:
-        con.execute("INSTALL spatial; LOAD spatial;")
-        row = con.execute("SELECT ST_AsWKB(ST_GeomFromText(?))", [wkt]).fetchone()
-        assert row is not None
-        return bytes(row[0])
-    finally:
-        con.close()
 
-
-def _test_grid_coords() -> tuple[np.ndarray, np.ndarray]:
-    """The 3x3 lat/lon arrays :func:`make_opener` installs."""
-    lat = 42.0 - np.arange(3)[:, None] * 0.027
-    lon = -71.0 + np.arange(3)[None, :] * 0.036
-    return (
-        np.broadcast_to(lat, (3, 3)).copy(),
-        np.broadcast_to(lon, (3, 3)).copy(),
+@pytest.fixture
+def artifact_dir(tmp_path: Path) -> Path:
+    output = tmp_path / "artifact"
+    build_hourly_observation_artifact(
+        PLACES, START, "2025-07-15", output, opener=make_opener(), shard_count=2
     )
+    return output
 
 
-def _box_wkb(ys: list[int], xs: list[int], margin: float = 0.005) -> bytes:
-    """A WKT box around the given nodes of the 3x3 test grid."""
-    lat, lon = _test_grid_coords()
-    lats = [float(lat[y, x]) for y, x in zip(ys, xs, strict=True)]
-    lons = [float(lon[y, x]) for y, x in zip(ys, xs, strict=True)]
-    south, north = min(lats) - margin, max(lats) + margin
-    west, east = min(lons) - margin, max(lons) + margin
-    return _wkb(
-        f"POLYGON(({west} {north}, {east} {north}, {east} {south}, "
-        f"{west} {south}, {west} {north}))"
-    )
-
-
-# Covers nodes (1,0) and (1,1): the place sits on (1,1) exactly, so the
-# anchor is a dead-on node hit while the footprint spans two.
-WIDE_BOX = _box_wkb([1, 1], [0, 1])
-
-
-def test_build_writes_observations_places_and_manifest(tmp_path) -> None:
-    output = tmp_path / "rain-artifact"
-    manifest = build_hourly_observation_artifact(
-        [a_place()],
-        "2025-07-15",
-        "2025-07-15",
-        output,
-        opener=make_opener(),
-    )
-
-    assert set(path.name for path in output.iterdir()) == {
-        "observations.parquet",
+def test_build_writes_the_v3_layout(artifact_dir: Path) -> None:
+    assert set(path.name for path in artifact_dir.iterdir()) == {
+        "observations",
         "places.parquet",
-        "sampling.parquet",
         "manifest.json",
     }
-    observations = pl.read_parquet(output / "observations.parquet")
-    assert observations.columns == list(OBSERVATION_COLUMNS)
-    assert observations["place_key"].unique().to_list() == ["osm:way:1"]
-    assert observations["variable"].unique().to_list() == [RAIN_RATE_VARIABLE]
-    assert observations["value"].to_list()[0] == pytest.approx(0.036)
-    assert observations["valid"].to_list() == [True, False]
-    assert observations["time_utc"].dtype == pl.Datetime("us", "UTC")
+    shards = sorted((artifact_dir / OBSERVATIONS_DIR).glob("*.parquet"))
+    assert len(shards) == 2
 
-    places = pl.read_parquet(output / "places.parquet")
-    assert places["place_key"].to_list() == ["osm:way:1"]
-    assert places["name"].to_list() == ["Course 1"]
 
-    sampling = pl.read_parquet(output / "sampling.parquet")
-    assert sampling["place_key"].unique().to_list() == ["osm:way:1"]
-    assert sampling["n_cells"].unique().to_list() == [1]
+def test_slim_observations_have_only_the_dynamic_columns(artifact_dir: Path) -> None:
+    for shard in (artifact_dir / OBSERVATIONS_DIR).glob("*.parquet"):
+        assert pl.read_parquet(shard).columns == list(SLIM_COLUMNS)
 
+
+def test_places_parquet_carries_the_static_columns(artifact_dir: Path) -> None:
+    places = pl.read_parquet(artifact_dir / "places.parquet")
+    for column in STATIC_COLUMNS:
+        assert column in places.columns
+    assert set(places[PLACE_KEY_COLUMN].to_list()) == {p.place_key for p in PLACES}
+
+
+def test_load_round_trips_to_the_same_places(artifact_dir: Path) -> None:
+    artifact = load_observation_artifact(artifact_dir)
+
+    assert [place.place_key for place in artifact.places] == [
+        p.place_key for p in sorted(PLACES, key=lambda p: p.place_key)
+    ]
+    assert artifact.manifest["artifact_type"] == ARTIFACT_TYPE
+    assert artifact.manifest["schema_version"] == ARTIFACT_SCHEMA_VERSION
+    # The observations stay lazy: no collect has happened.
+    assert isinstance(artifact.observations, pl.LazyFrame)
+
+
+def test_manifest_records_the_observed_coverage(artifact_dir: Path) -> None:
+    artifact = load_observation_artifact(artifact_dir)
+
+    assert artifact.observed_start is not None
+    assert artifact.observed_end is not None
+    assert artifact.observed_start.isoformat() == "2025-07-15T00:00:00+00:00"
+    assert artifact.observed_end.isoformat() == "2025-07-15T05:00:00+00:00"
+    assert artifact.manifest["row_count"] == len(PLACES) * HOURS
+    assert artifact.manifest["place_count"] == len(PLACES)
+
+
+def test_the_manifest_on_disk_matches_the_returned_one(tmp_path: Path) -> None:
+    output = tmp_path / "artifact"
+    manifest = build_hourly_observation_artifact(
+        PLACES, START, "2025-07-15", output, opener=make_opener()
+    )
     on_disk = json.loads((output / "manifest.json").read_text())
     assert on_disk == manifest
-    assert manifest["variable"]["units"] == "mm h-1"
-    assert manifest["variable"]["threshold_applied"] is None
-    assert manifest["date_range"]["observed_start"] == "2025-07-15T00:00:00+00:00"
-    assert manifest["observations"]["row_count"] == 2
-    assert manifest["observations"]["valid_row_count"] == 1
-    assert manifest["observations"]["invalid_row_count"] == 1
-    assert manifest["observations"]["valid_fraction"] == 0.5
-    assert len(manifest["place_catalog"]["content_sha256"]) == 64
 
 
-def test_sampling_table_records_every_node_a_footprint_was_averaged_over(
-    tmp_path,
-) -> None:
-    """The footprint survives into the artifact, not just the anchor."""
-    place = a_place()
-    place = place.model_copy(update={"geometry_wkb": WIDE_BOX})
-    output = tmp_path / "footprint-artifact"
-    manifest = build_hourly_observation_artifact(
-        [place],
-        "2025-07-15",
-        "2025-07-15",
-        output,
-        opener=make_opener(),
-    )
-
-    sampling = pl.read_parquet(output / "sampling.parquet")
-    assert sampling["sampling"].unique().to_list() == ["footprint"]
-    assert sampling.height == int(sampling["n_cells"][0])
-    assert sampling["weight"].sum() == pytest.approx(1.0)
-
-    observations = pl.read_parquet(output / "observations.parquet")
-    assert observations["sampling"].unique().to_list() == ["footprint"]
-    assert observations["n_cells"].unique().to_list() == [sampling.height]
-    # sampling_key identifies the node set, so it is constant per place.
-    assert observations["sampling_key"].n_unique() == 1
-
-    assert manifest["sampling_cells"]["footprint_places"] == 1
-    assert manifest["sampling_cells"]["point_places"] == 0
-    assert manifest["sampling_cells"]["row_count"] == sampling.height
-    assert manifest["sampling_cells"]["file"] == "sampling.parquet"
-
-
-def test_anchor_columns_do_not_silently_describe_a_footprint(tmp_path) -> None:
-    """A multi-node place must not look like a single exact node hit.
-
-    The anchor columns keep their historical meaning, so this pins the
-    thing that would otherwise be invisible: a footprint place whose
-    anchor is dead-on still reports n_cells > 1.
-    """
-    place = a_place()
-    place = place.model_copy(update={"geometry_wkb": WIDE_BOX})
-    output = tmp_path / "anchor-artifact"
-    build_hourly_observation_artifact(
-        [place],
-        "2025-07-15",
-        "2025-07-15",
-        output,
-        opener=make_opener(),
-    )
-    observations = pl.read_parquet(output / "observations.parquet")
-    assert observations["snap_distance_km"][0] == pytest.approx(0.0)
-    assert observations["n_cells"][0] > 1
-
-
-def test_place_catalog_hash_does_not_depend_on_input_order(tmp_path) -> None:
-    first = build_hourly_observation_artifact(
-        [a_place(1), a_place(2)],
-        "2025-07-15",
-        "2025-07-15",
-        tmp_path / "first",
-        opener=make_opener(),
-    )
-    second = build_hourly_observation_artifact(
-        [a_place(2), a_place(1)],
-        "2025-07-15",
-        "2025-07-15",
-        tmp_path / "second",
-        opener=make_opener(),
-    )
-    assert (
-        first["place_catalog"]["content_sha256"]
-        == second["place_catalog"]["content_sha256"]
-    )
-
-
-def test_existing_output_is_not_overwritten(tmp_path) -> None:
-    output = tmp_path / "already-there"
+def test_existing_output_is_not_overwritten(tmp_path: Path) -> None:
+    output = tmp_path / "artifact"
     output.mkdir()
     with pytest.raises(FileExistsError, match="already exists"):
         build_hourly_observation_artifact(
-            [a_place()],
-            "2025-07-15",
+            PLACES,
+            START,
             "2025-07-15",
             output,
             opener=lambda *_args, **_kwargs: pytest.fail("should not read archive"),
         )
 
 
-def test_empty_result_does_not_publish_partial_artifact(tmp_path) -> None:
-    output = tmp_path / "empty"
+def test_empty_result_raises_and_leaves_no_output(tmp_path: Path) -> None:
+    output = tmp_path / "artifact"
     with pytest.raises(ValueError, match="no observations"):
         build_hourly_observation_artifact(
-            [a_place()],
-            "2017-01-01",
-            "2017-01-02",
-            output,
-            opener=make_opener(),
+            PLACES, "2017-01-01", "2017-01-02", output, opener=make_opener()
         )
     assert not output.exists()
-    assert list(tmp_path.iterdir()) == []
 
 
-def test_places_parquet_preserves_geometry(tmp_path) -> None:
-    wkb = _wkb("POINT(-70.964 41.973)")
-    place = a_place().model_copy(update={"geometry_wkb": wkb})
-    output = tmp_path / "rain"
-    build_hourly_observation_artifact(
-        [place], "2025-07-15", "2025-07-15", output, opener=make_opener()
+def test_a_foreign_manifest_is_rejected(tmp_path: Path) -> None:
+    directory = tmp_path / "not-an-artifact"
+    directory.mkdir()
+    (directory / "manifest.json").write_text(
+        json.dumps({"artifact_type": "place_catalog"}), encoding="utf-8"
     )
-    places = pl.read_parquet(output / "places.parquet")
-    assert places["geometry_wkb"].dtype == pl.Binary
-    assert places["geometry_wkb"][0] == wkb
+
+    with pytest.raises(ValueError, match="not an hourly observation artifact"):
+        load_observation_artifact(directory)
 
 
-def test_places_parquet_geometry_column_is_binary_even_when_empty(tmp_path) -> None:
-    output = tmp_path / "rain"
+def test_an_unreadable_schema_version_is_rejected(artifact_dir: Path) -> None:
+    manifest_path = artifact_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema_version"] = ARTIFACT_SCHEMA_VERSION + 1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported artifact schema version"):
+        load_observation_artifact(artifact_dir)
+
+
+def test_load_forwards_storage_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "artifact"
     build_hourly_observation_artifact(
-        [a_place()], "2025-07-15", "2025-07-15", output, opener=make_opener()
+        PLACES, START, "2025-07-15", output, opener=make_opener()
     )
-    places = pl.read_parquet(output / "places.parquet")
-    assert places["geometry_wkb"].dtype == pl.Binary
-    assert places["geometry_wkb"][0] is None
+
+    seen: dict[str, tuple[str, object]] = {}
+    original_scan = pl.scan_parquet
+    original_read = pl.read_parquet
+
+    def spy_scan(path, **kwargs):
+        seen["scan"] = (str(path), kwargs.get("storage_options"))
+        return original_scan(path)
+
+    def spy_read(path, **kwargs):
+        seen["read"] = (str(path), kwargs.get("storage_options"))
+        return original_read(path)
+
+    monkeypatch.setattr(pl, "scan_parquet", spy_scan)
+    monkeypatch.setattr(pl, "read_parquet", spy_read)
+
+    options = {"aws_region": "us-east-1"}
+    load_observation_artifact(str(output), storage_options=options)
+
+    assert seen["scan"][1] == options
+    assert seen["read"][1] == options
+    assert seen["scan"][0].endswith("observations/*.parquet")
+
+
+def test_read_text_reads_a_file_url(tmp_path: Path) -> None:
+    from tstorm_climo.artifacts import _read_text
+
+    path = tmp_path / "manifest.json"
+    path.write_text('{"schema_version": 3}', encoding="utf-8")
+    assert _read_text(path.as_uri()) == '{"schema_version": 3}'
+
+
+def test_loading_from_s3_names_the_missing_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """boto3 is an optional extra, so a core install cannot read a remote
+    artifact. The error has to name the extra, or the user is left
+    guessing how a plain `uv sync` missed it.
+    """
+    # A None entry in sys.modules makes ``import boto3`` fail the way an
+    # absent package does (see also test_catalog_storage.py).
+    monkeypatch.setitem(sys.modules, "boto3", None)
+
+    with pytest.raises(RuntimeError, match=r"tstorm-climo\[catalog-s3\]"):
+        load_observation_artifact("s3://bucket/north-shore/rain-2018-2025")

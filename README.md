@@ -81,13 +81,22 @@ uv run tstorm-climo build-observations \
 `--places` takes either that CSV or a catalog's `places.parquet`, which
 carries OSM footprint geometry.
 
-The new output directory contains `observations.parquet`, `places.parquet`,
-`sampling.parquet`, and `manifest.json`. Observations use stable `place_key`
-values, UTC times, the `rain_rate` variable in mm/h, and an explicit
-validity flag. `sampling.parquet` has one row per place per grid node
-actually averaged — the authoritative record of how each value was
-produced. The builder does not apply a wet threshold. It will not overwrite
-an existing output directory; choose a new path for each artifact build.
+The new output directory contains a place-clustered `observations/` of
+sharded Parquet files, a `places.parquet` snapshot, and `manifest.json`.
+Observations store only the columns that change hour to hour — `place_key`,
+`time_utc`, `variable`, `value`, `valid` — sorted by place so a `place_key`
+filter skips whole row groups. Everything constant per place (timezone,
+anchor node, sampling identity) lives once in `places.parquet`. The builder
+does not apply a wet threshold, and will not overwrite an existing output
+directory; choose a new path for each artifact build.
+
+The artifact is readable on its own, with no archive access: the reader
+validates the manifest's schema version, holds the observations as a
+**lazy scan**, and the query layer puts the selection into the plan, so
+the filters and projection are pushed into the Parquet reader and only
+the rows and columns a question needs are read. This is the path a
+hosted service uses — prepared data in, answers out, with nothing
+reading the archive while a user is waiting.
 
 Rank places by how often it rains on them — the Chuck leaderboard:
 
@@ -98,12 +107,23 @@ uv run tstorm-climo rain-report \
   --kind golf_course
 ```
 
+The same report from a prepared artifact, with no archive read:
+
+```sh
+uv run tstorm-climo rain-report \
+  --artifact artifacts/north-shore/rain-2018-2025 \
+  --kind golf_course
+```
+
 Useful flags: `--month 6` restricts to one calendar month in local time,
 `--threshold` sets the wet rate in mm/h (default 0.05), and `--output
 report.parquet` writes the summary with a `.meta.json` sidecar recording
 the archive, date range, threshold, reliability figure, and the CC-BY /
-ODbL attribution. This is a fixed-range summary, not the hourly data
-artifact needed to recalculate arbitrary date ranges in an interactive app.
+ODbL attribution. With `--artifact`, `--start`/`--end` are optional and
+default to the artifact's own coverage; with `--places` they are
+required, because the archive has to be read for an arbitrary range.
+This is a fixed-range summary, not the hourly data artifact needed to
+recalculate arbitrary date ranges in an interactive app.
 `--places` takes the same CSV or catalog parquet as `build-observations`.
 
 The report always prints its **split-half reliability** alongside the
@@ -114,6 +134,41 @@ of grid nodes get identical numbers and are marked `tied`.
 
 ## Development
 
+### Running the app
+
+The marimo app serves views from built artifacts — it reads no archive
+and no network while running:
+
+```sh
+uv run tstorm-climo build-observations \
+  --places places_north_shore.csv \
+  --start 2018-01-01 --end 2026-01-01 \
+  --output artifacts/north-shore/rain-2018-2025
+
+uv run tstorm-climo build-gridded \
+  --places places_north_shore.csv \
+  --start 2025-11-01 --end 2026-11-01 \
+  --output artifacts/north-shore/gridded \
+  --chunk-hours 744
+
+export TSTORM_CLIMO_ARTIFACT="artifacts/north-shore/rain-2018-2025"
+export TSTORM_CLIMO_GRIDDED="artifacts/north-shore/gridded"  # optional, enables the map
+uv sync --group app
+uv run --group app marimo run app/rain_app.py
+```
+
+The observation artifact backs the leaderboard, monthly, and local-hour
+views (attraction kind, place selection, threshold, and date range are
+bounded by the artifact's own coverage); the gridded store enables the
+wet-hours-per-node map over its last year. `--chunk-hours` defaults to
+about a month. For a quick look without building anything real:
+
+```sh
+uv run --group app python app/demo_artifact.py   # network-free synthetic pair
+```
+
+## Development checks
+
 ```sh
 uv run pytest              # run the test suite
 uv run ruff check          # lint
@@ -121,15 +176,22 @@ uv run ruff format --check # style
 uv run ty check            # type check
 ```
 
+CI runs all four plus a package build, and resolves the `app` dependency
+group so the marimo pins are checked before anything is deployed.
+
 ## Status
 
 Implemented: HRRR data access, Geofabrik place-catalog builds, OSM place
 fetching, grid mapping, footprint and point sampling, per-place rain
-extraction and summaries, the `rain-report` CLI, and reusable hourly rain
-Parquet artifacts. Geofabrik catalogs can optionally be published to S3.
-Snow analysis and a hosted marimo app are not implemented. The planned app
-will calculate in response to user choices from prepared artifacts, not
-fetch HRRR or Overpass data on each interaction.
+extraction and summaries, the `rain-report` CLI, reusable hourly rain
+Parquet artifacts, and a gridded display store (Zarr V3 on Icechunk) with
+its `build-gridded` CLI. The marimo app (`app/rain_app.py`) serves the
+leaderboard, monthly, local-hour, and wet-hours-map views from prepared
+artifacts — see "Running the app" above. A hosted deployment (artifact
+S3 publication, `latest.json` pointer, container) is not built. The planned
+app will calculate in response to user choices from prepared artifacts, not
+fetch HRRR or Overpass data on each interaction — already true of the
+local app.
 
 Pipeline: places (OSM via Overpass as CSV, or a Geofabrik catalog with
 geometry) → `Grid` maps each place to its HRRR nodes — every node its
@@ -138,6 +200,23 @@ footprint → `extract_series` reads one contiguous grid block and returns an
 hourly series keyed by stable OSM `place_key` → `summarize.place_summary` /
 `by_local_month` / `by_local_hour` / `scorecard` produce the per-place
 tables.
+
+Serving reads the same way: `artifacts.load_observation_artifact` loads a
+built artifact and validates its schema version, holding the observations
+as a lazy scan → `query.select_observations` pushes a bounded selection (at
+most `MAX_SELECTED_PLACES` places) down to the Parquet reader and collects
+it → the same `summarize` functions produce the tables.
+`query.artifact_report` bundles the summary, monthly, and hourly tables
+plus the reliability figure, and `query.build_wetness_summary` produces the
+one-row-per-place map. Nothing in that path opens a network connection, so
+an app session costs no archive reads.
+
+**The server does not hold the artifact.** Opening it reads nothing, and
+each query reads only what it needs. On the full 2018–2025 North Shore
+artifact (110 places, 7.7 M rows) a June view of the golf courses takes
+0.3 s and peaks at 0.35 GB; the largest possible query — everything,
+eight years — takes 2.6 s and peaks at 4.8 GB. So the *largest* query the
+app allows is what sizes the container. `PLAN.md` has the full table.
 
 Rain detection uses `precipitation_surface` (hourly-average rate) from
 the dynamical.org HRRR analysis archive, converted from kg m-2 s-1 to

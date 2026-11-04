@@ -956,3 +956,10 @@ comparisons honestly, exactly as the marimo prototype did.
   decent but can miss coastal events (HRRR's radar coverage extends
   offshore but the golf courses near the coast sit in the model's
   weakest radar region). Keep a note in any published output.
+
+## Remaining-work execution roadmap
+
+The audited, ordered implementation plan for open items and deployment
+follow-ups is in [`docs/remaining-work.md`](docs/remaining-work.md). It marks
+landed work, required decisions, dependencies, scope, files, acceptance
+checks, and items intentionally deferred.

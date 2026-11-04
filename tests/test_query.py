@@ -66,7 +66,7 @@ def make_opener():
 
 def course(osm_id: int, row: int, col: int) -> Place:
     return Place(
-        osm_type="way",
+        osm_type="way",  # polygon over node
         osm_id=osm_id,
         name=f"Course {osm_id}",
         kind="golf_course",

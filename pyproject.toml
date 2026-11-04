@@ -38,6 +38,7 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "boto3>=1.43.123",
+    "httpx2>=2.16.0",
     "pyarrow>=26.0.0",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
@@ -46,16 +47,17 @@ dev = [
     "zarr>=3.4.2",
 ]
 
-# App-only dependencies: the interactive marimo Studio page, kept out of
-# the core CLI so the analysis tooling has no UI requirements.
-app = [
-    "altair>=6.3.0",
-    "marimo>=0.25.1",
-    "marimo-studio>=0.3.0",
+# The FastAPI backend behind the web app. Kept out of the core CLI; the
+# service and API tests use this group, including WKB-to-GeoJSON conversion.
+web = [
+    "fastapi>=0.115.12",
+    "shapely>=2.0",
+    "uvicorn>=0.34.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 88
@@ -64,17 +66,11 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
-[tool.ruff.lint.per-file-ignores]
-# marimo renders a cell's output from its last expression, so the bare
-# trailing widget/chart names in the app are the framework's idiom (see
-# marimo's docs on cell output), not dead code.
-"app/rain_app.py" = ["B018"]
-
 [tool.ty.environment]
 python-version = "3.12"
 
 [tool.ty.src]
-include = ["src", "tests", "app"]
+include = ["src", "tests", "scripts", "apps"]
 
 [tool.coverage.run]
 source = ["src/tstorm_climo"]

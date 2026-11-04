@@ -5,10 +5,14 @@ on:
   pull_request:
 
 jobs:
-  test:
+  python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -16,16 +20,8 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --frozen
-
-      # The app group is what the hosted service runs on, so its pins
-      # are resolved and type-checked here too. A broken marimo pin
-      # must not reach a deploy.
-      - name: Install app dependencies
-        run: uv sync --frozen --group app
-
-      - name: Tests
-        run: uv run pytest --cov=src/tstorm_climo --cov-report=term-missing
+        # Install the service dependencies for the backend and API tests.
+        run: uv sync --frozen --group web
 
       - name: Lint
         run: uv run ruff check
@@ -33,11 +29,40 @@ jobs:
       - name: Format check
         run: uv run ruff format --check
 
-      - name: Marimo check
-        run: uv run --group app marimo check app/rain_app.py
-
       - name: Type check
         run: uv run ty check
 
-      - name: Build
+      - name: Tests with library and backend coverage
+        run: uv run pytest -q --cov=src/tstorm_climo --cov=apps.web.backend --cov-report=term-missing
+
+      - name: Build Python package
         run: uv build
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Type check frontend
+        run: npm run typecheck
+
+      - name: Test frontend
+        run: npm test
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Audit frontend dependencies
+        run: npm audit

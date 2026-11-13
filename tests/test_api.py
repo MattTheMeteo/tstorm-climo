@@ -128,14 +128,31 @@ def test_startup_logs_loaded_artifacts(tmp_path: Path, caplog) -> None:
     assert "API ready in" in caplog.text
 
 
-def test_startup_failure_is_logged(tmp_path: Path, caplog) -> None:
-    caplog.set_level(logging.ERROR, logger="apps.web.backend.app")
+def test_startup_failure_keeps_the_context_and_propagates(
+    tmp_path: Path, caplog
+) -> None:
+    caplog.set_level(logging.INFO, logger="apps.web.backend.app")
     app = create_app(Settings(artifact_dir=str(tmp_path / "missing"), gridded_dir=None))
 
     with pytest.raises(FileNotFoundError), TestClient(app):
         pass
 
-    assert "Failed to load artifacts during startup" in caplog.text
+    assert "Starting tstorm-climo API" in caplog.text
+    assert str(tmp_path / "missing") in caplog.text
+
+
+def test_request_failures_are_logged_with_timing(caplog) -> None:
+    app = create_app(Settings(artifact_dir=None, gridded_dir=None))
+
+    @app.get("/boom")
+    def boom() -> None:
+        raise RuntimeError("boom")
+
+    caplog.set_level(logging.ERROR, logger="apps.web.backend.app")
+    with TestClient(app, raise_server_exceptions=False) as client:
+        assert client.get("/boom").status_code == 500
+
+    assert "GET /boom failed after" in caplog.text
 
 
 def test_requests_over_the_slow_budget_log_a_warning(tmp_path: Path, caplog) -> None:

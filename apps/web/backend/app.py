@@ -8,6 +8,7 @@ a scan plan, not data -- so startup stays cheap and idle memory stays low.
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -39,20 +40,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved.artifact_dir or "none",
             resolved.gridded_dir or "none",
         )
-        try:
-            observation = (
-                load_observation_artifact(resolved.artifact_dir)
-                if resolved.artifact_dir is not None
-                else None
-            )
-            gridded = (
-                load_gridded_artifact(resolved.gridded_dir)
-                if resolved.gridded_dir is not None
-                else None
-            )
-        except Exception:
-            logger.exception("Failed to load artifacts during startup")
-            raise
+        # Loading failures propagate to the server, which logs the
+        # traceback. The start line above already names both sources.
+        observation = (
+            load_observation_artifact(resolved.artifact_dir)
+            if resolved.artifact_dir is not None
+            else None
+        )
+        gridded = (
+            load_gridded_artifact(resolved.gridded_dir)
+            if resolved.gridded_dir is not None
+            else None
+        )
         if observation is None:
             logger.warning(
                 "No observation artifact configured; data endpoints will return 503"
@@ -94,30 +93,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def log_request(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        """Time each request; warn when one exceeds the configured budget."""
+        """Time each request; warn when one exceeds the configured budget.
+
+        A request that raises never produces a response. Rather than
+        catching every exception and re-raising it, the ``finally`` block
+        notices the missing response and logs the request and its timing;
+        the exception itself keeps propagating to the server's error
+        handler, which logs the traceback.
+        """
         started = time.perf_counter()
+        response: Response | None = None
         try:
             response = await call_next(request)
-        except Exception:
-            logger.exception(
-                "%s %s failed after %s",
-                request.method,
-                request.url.path,
-                format_duration(time.perf_counter() - started),
-            )
-            raise
-        elapsed = time.perf_counter() - started
-        message = "%s %s -> %s in %s"
-        arguments = (
-            request.method,
-            request.url.path,
-            response.status_code,
-            format_duration(elapsed),
-        )
-        if elapsed >= resolved.slow_request_seconds:
-            logger.warning("%s %s -> %s in %s (slow request)", *arguments)
-        else:
-            logger.debug(message, *arguments)
+        finally:
+            elapsed = time.perf_counter() - started
+            if response is None:
+                # BaseExceptions such as cancellation are not request
+                # failures; only Exception is worth an error line.
+                failure = sys.exc_info()[1]
+                if isinstance(failure, Exception):
+                    logger.error(
+                        "%s %s failed after %s",
+                        request.method,
+                        request.url.path,
+                        format_duration(elapsed),
+                    )
+            elif elapsed >= resolved.slow_request_seconds:
+                logger.warning(
+                    "%s %s -> %s in %s (slow request)",
+                    request.method,
+                    request.url.path,
+                    response.status_code,
+                    format_duration(elapsed),
+                )
+            else:
+                logger.debug(
+                    "%s %s -> %s in %s",
+                    request.method,
+                    request.url.path,
+                    response.status_code,
+                    format_duration(elapsed),
+                )
+        assert response is not None
         return response
 
     @application.get("/health")

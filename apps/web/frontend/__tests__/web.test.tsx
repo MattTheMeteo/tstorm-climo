@@ -132,6 +132,7 @@ const wetness: WetnessGeoJSON = {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("API client and contracts", () => {
@@ -159,6 +160,44 @@ describe("API client and contracts", () => {
     );
     expect(WetnessGeoJSONSchema.safeParse({ type: "FeatureCollection", features: [{}] }).success)
       .toBe(false);
+  });
+
+  it("logs failed responses without changing the rejection", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response("no gridded artifact", { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getWetness({ start: "2025-07-01" })).rejects.toThrow(
+      "503: no gridded artifact",
+    );
+    expect(consoleError).toHaveBeenCalledWith(
+      "[tstorm-climo]",
+      "API response error",
+      "GET",
+      "/api/wetness?start=2025-07-01",
+      503,
+      "no gridded artifact",
+    );
+  });
+
+  it("logs malformed responses before rejecting", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ type: "FeatureCollection", features: [{}] }), {
+        status: 200,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getWetness({})).rejects.toThrow();
+    expect(consoleError).toHaveBeenCalledWith(
+      "[tstorm-climo]",
+      "API response did not match the expected schema",
+      "/api/wetness",
+      expect.anything(),
+    );
   });
 
   it("posts selected places as JSON and rejects malformed artifact metadata", async () => {

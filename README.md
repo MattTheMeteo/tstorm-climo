@@ -125,6 +125,42 @@ before trusting the ordering. Low reliability means the ranking may
 mostly reflect which years were sampled. Places read from the same *set*
 of grid nodes get identical numbers and are marked `tied`.
 
+## Logging and progress
+
+Long builds report progress on **stderr**; results and reports stay on
+**stdout**, so redirecting a command's output still captures only its
+answer. The CLI logs stage boundaries with elapsed time and rate-limits
+periodic counters to about one line every five seconds.
+
+- Geofabrik downloads report bytes and a percentage when the server sends
+  `Content-Length`, with throughput alongside. When that header is absent,
+  the line shows bytes transferred instead of inventing a percentage.
+- The PBF scan reports OSM objects scanned and places matched, because the
+  source provides no reliable total.
+- Extraction, geometry processing, shard writes, and the final artifact
+  write each report start/completion and duration.
+
+By default the CLI logs at `INFO`. `-v/--verbose` adds debug detail, and
+`-q/--quiet` logs only warnings and errors. The flags work before or after
+the subcommand:
+
+```sh
+uv run tstorm-climo -q build-observations ...
+uv run tstorm-climo build-catalog --verbose ...
+```
+
+Importing `tstorm_climo` installs no handlers and changes no logging
+configuration; only the CLI entry point configures logging, so a script or
+service calling the builders keeps its own logging setup.
+
+The FastAPI service logs artifact startup and slow requests through
+Uvicorn's stderr handler. `TSTORM_CLIMO_LOG_LEVEL` (default `INFO`; use
+`DEBUG` for per-request timings) and `TSTORM_CLIMO_SLOW_REQUEST_SECONDS`
+(default `1.0`) control its output. The Next.js browser logger reads
+`NEXT_PUBLIC_LOG_LEVEL` (`debug`, `info`, `warn`, `error`, or `silent`);
+it defaults to `debug` in development and `warn` in production, logging
+API failures and request timings.
+
 ## Development
 
 ### Running the app

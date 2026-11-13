@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -101,6 +102,24 @@ def test_build_writes_the_v3_layout(artifact_dir: Path) -> None:
     }
     shards = sorted((artifact_dir / OBSERVATIONS_DIR).glob("*.parquet"))
     assert len(shards) == 2
+
+
+def test_build_logs_stage_boundaries(tmp_path: Path, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="tstorm_climo.artifacts")
+
+    build_hourly_observation_artifact(
+        PLACES,
+        START,
+        "2025-07-15",
+        tmp_path / "artifact",
+        opener=make_opener(),
+        shard_count=2,
+    )
+
+    assert "Building observation artifact" in caplog.text
+    assert "Writing 2 observation shards..." in caplog.text
+    assert "Wrote shard-0000.parquet" in caplog.text
+    assert "Observation artifact ready" in caplog.text
 
 
 def test_slim_observations_have_only_the_dynamic_columns(artifact_dir: Path) -> None:

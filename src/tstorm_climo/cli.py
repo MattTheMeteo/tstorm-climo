@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,12 @@ from tstorm_climo.places import (
     load_places,
     save_csv,
 )
+from tstorm_climo.progress import (
+    configure_logging,
+    format_count,
+    format_duration,
+    stage,
+)
 from tstorm_climo.provenance import (
     ARCHIVE_ATTRIBUTION,
     PLACES_ATTRIBUTION,
@@ -50,6 +58,35 @@ from tstorm_climo.summarize import (
     split_half_reliability,
 )
 
+logger = logging.getLogger(__name__)
+
+
+def _add_verbosity(
+    parser: argparse.ArgumentParser, *, suppress_default: bool = False
+) -> None:
+    """Add ``-v/--verbose`` and ``-q/--quiet`` to a parser.
+
+    The options are offered both before and after the subcommand. A
+    subparser must suppress its default so it does not overwrite a value
+    already set on the main parser.
+    """
+    default = argparse.SUPPRESS if suppress_default else False
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=default,
+        help="Log detailed progress and debug information to stderr.",
+    )
+    group.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        default=default,
+        help="Log only warnings and errors to stderr.",
+    )
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for the CLI."""
@@ -57,12 +94,14 @@ def build_parser() -> argparse.ArgumentParser:
         prog="tstorm-climo",
         description=("Build a precipitation climatology from HRRR analysis data."),
     )
+    _add_verbosity(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     summarize = subparsers.add_parser(
         "summarize",
         help="Summarize precipitation events over a time range.",
     )
+    _add_verbosity(summarize, suppress_default=True)
     summarize.add_argument(
         "--start",
         required=True,
@@ -78,6 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
         "build-observations",
         help="Build a reusable hourly rain-observation artifact.",
     )
+    _add_verbosity(build, suppress_default=True)
     build.add_argument(
         "--places",
         required=True,
@@ -109,6 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
             "map views, from the same places and range."
         ),
     )
+    _add_verbosity(grid, suppress_default=True)
     grid.add_argument(
         "--places",
         required=True,
@@ -147,6 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
         "rain-report",
         help="Rank places by how often it rains on them.",
     )
+    _add_verbosity(report, suppress_default=True)
     source = report.add_mutually_exclusive_group(required=True)
     source.add_argument(
         "--places",
@@ -216,6 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
         "build-catalog",
         help="Pull a place catalog from a Geofabrik raw .osm.pbf extract.",
     )
+    _add_verbosity(catalog, suppress_default=True)
     catalog.add_argument(
         "--kind",
         action="append",
@@ -269,6 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
         "fetch-places",
         help="Fetch named places from OpenStreetMap via Overpass.",
     )
+    _add_verbosity(fetch, suppress_default=True)
     fetch.add_argument(
         "--bbox",
         required=True,
@@ -306,12 +350,24 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point for the tstorm-climo console script."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.verbose and args.quiet:
+        parser.error("--verbose and --quiet are mutually exclusive")
+    configure_logging(verbose=args.verbose, quiet=args.quiet)
 
     if args.command == "summarize":
-        precipitation = load_precipitation(args.start, args.end)
-        events = summarize_grid(precipitation)
-        for time, count in events.items():
-            print(f"{time}: {count} grid points with precipitation")
+        started = time.monotonic()
+        logger.info("Summarizing precipitation from %s to %s", args.start, args.end)
+        with stage(logger, "Loading precipitation from the HRRR archive"):
+            precipitation = load_precipitation(args.start, args.end)
+        with stage(logger, "Counting wet grid points per hour"):
+            events = summarize_grid(precipitation)
+        logger.info(
+            "Summarized %s hourly steps in %s",
+            format_count(len(events)),
+            format_duration(time.monotonic() - started),
+        )
+        for time_value, count in events.items():
+            print(f"{time_value}: {count} grid points with precipitation")
         return 0
 
     if args.command == "build-observations":
@@ -328,17 +384,32 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "fetch-places":
         kinds = args.kind or list(KIND_TAGS)
+        logger.info(
+            "Fetching %s in bbox %s",
+            ", ".join(kinds),
+            tuple(args.bbox),
+        )
         query = build_query(tuple(args.bbox), kinds)
         elements = run_query(query)
+        logger.info("Received %s Overpass elements", format_count(len(elements)))
         places = [
             place
             for element in elements
             if (place := from_overpass(kinds, element)) is not None
         ]
         if args.named_only:
+            before = len(places)
             places = [p for p in places if p.name]
+            logger.info(
+                "Dropped %s unnamed places",
+                format_count(before - len(places)),
+            )
         if not args.no_dedupe:
+            before = len(places)
             places = deduplicate(places)
+            logger.info(
+                "Removed %s near-duplicates", format_count(before - len(places))
+            )
         save_csv(places, args.output)
         print(f"Wrote {len(places)} places to {args.output}")
         return 0
@@ -363,6 +434,11 @@ def _build_catalog(args: argparse.Namespace) -> int:
             print(f"  {kind}: {count}")
         print(f"Wrote {manifest['place_count']} places to {release}")
         if args.s3_bucket:
+            logger.info(
+                "Publishing release to s3://%s/%s",
+                args.s3_bucket,
+                _catalog_s3_prefix(args),
+            )
             pointer = publish_catalog_to_s3(
                 release,
                 args.s3_bucket,
@@ -409,6 +485,7 @@ def _build_observations(args: argparse.Namespace) -> int:
     if not places:
         print("No places to build observations for.", file=sys.stderr)
         return 1
+    logger.info("Loaded %s places from %s", format_count(len(places)), args.places)
     try:
         manifest = build_hourly_observation_artifact(
             places, args.start, args.end, args.output
@@ -435,6 +512,7 @@ def _build_gridded(args: argparse.Namespace) -> int:
     if not places:
         print("No places to build a gridded artifact for.", file=sys.stderr)
         return 1
+    logger.info("Loaded %s places from %s", format_count(len(places)), args.places)
     kwargs: dict[str, Any] = {}
     if args.chunk_hours is not None:
         kwargs["chunk_hours"] = args.chunk_hours
@@ -551,6 +629,9 @@ def _prepare_archive_report(
         print("No places to report on.", file=sys.stderr)
         return None
 
+    logger.info(
+        "Reporting on %s places from the HRRR archive", format_count(len(places))
+    )
     series = extract_series(places, args.start, args.end)
     if series.height == 0:
         print(
@@ -570,6 +651,7 @@ def _prepare_artifact_report(
     Reports from prepared hourly data, so no archive read happens and
     the same artifact always gives the same answer.
     """
+    logger.info("Reading report from artifact %s", args.artifact)
     try:
         artifact = load_observation_artifact(args.artifact)
     except (FileNotFoundError, ValueError) as error:

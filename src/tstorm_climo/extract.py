@@ -42,6 +42,8 @@ choose.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Sequence
 from typing import Any, NamedTuple
 
@@ -59,6 +61,12 @@ from tstorm_climo.hrrr import (
     to_mm_per_hour,
 )
 from tstorm_climo.places import PLACE_KEY_COLUMN, Place
+from tstorm_climo.progress import (
+    RateLimiter,
+    format_count,
+    format_duration,
+    stage,
+)
 
 # Column names of the returned frame, for callers that build on it.
 TIME_COLUMN = "time"
@@ -77,6 +85,8 @@ SAMPLING_KEY_COLUMN = "sampling_key"
 
 FOOTPRINT_SAMPLING = "footprint"
 POINT_SAMPLING = "point"
+
+logger = logging.getLogger(__name__)
 
 SCHEMA: dict[str, DataType | DataTypeClass] = {
     PLACE_KEY_COLUMN: pl.String,
@@ -170,8 +180,14 @@ def sampling_cells(grid: Grid, places: Sequence[Place]) -> list[PlaceSampling]:
     read, so callers that need the footprint without re-extracting (the
     artifact builder, the summary layer) can call it directly.
     """
+    if not places:
+        return []
+    logger.info("Mapping %s places to grid nodes", format_count(len(places)))
+    limiter = RateLimiter()
     result: list[PlaceSampling] = []
-    for place, anchor in zip(places, grid.locate_places(places), strict=True):
+    for index, (place, anchor) in enumerate(
+        zip(places, grid.locate_places(places), strict=True), start=1
+    ):
         covered = grid.cover_cells(place.geometry_wkb) if place.geometry_wkb else []
         if covered:
             cells = [
@@ -197,6 +213,19 @@ def sampling_cells(grid: Grid, places: Sequence[Place]) -> list[PlaceSampling]:
                 )
             ]
         result.append(PlaceSampling(anchor=anchor, cells=cells))
+        if limiter.due():
+            logger.info(
+                "Mapped %s / %s places",
+                format_count(index),
+                format_count(len(places)),
+            )
+    footprints = sum(1 for entry in result if entry.sampling == FOOTPRINT_SAMPLING)
+    logger.info(
+        "Mapped %s places: %s footprint, %s nearest-node",
+        format_count(len(result)),
+        format_count(footprints),
+        format_count(len(result) - footprints),
+    )
     return result
 
 
@@ -246,8 +275,16 @@ def extract_series(
     if len(set(place_keys)) != len(place_keys):
         raise ValueError("places must have unique place_key values")
 
+    started = time.monotonic()
+    logger.info(
+        "Extracting %s places from %s to %s",
+        format_count(len(places)),
+        start,
+        end,
+    )
     ds = open_analysis(opener=opener)
-    active_grid = grid if grid is not None else Grid.from_dataset(ds)
+    with stage(logger, "Building the grid lookup"):
+        active_grid = grid if grid is not None else Grid.from_dataset(ds)
     # Footprint nodes when a polygon covers any, else the anchor node.
     sampling = sampling_cells(active_grid, places)
 
@@ -262,15 +299,28 @@ def extract_series(
     )
     if block.sizes["time"] == 0:
         return pl.DataFrame(schema=SCHEMA)
-    block = to_mm_per_hour(block)
+    logger.info(
+        "Reading %s hours over a %sx%s node block",
+        format_count(block.sizes["time"]),
+        row_slice.stop - row_slice.start,
+        col_slice.stop - col_slice.start,
+    )
+    with stage(logger, "Reading and converting precipitation"):
+        mm_per_hour_values = np.asarray(to_mm_per_hour(block).values)
 
     # Footprint-weighted average per (place, time).
     mm_per_hour = _weighted_rates(
-        block.values, sampling, row_slice.start, col_slice.start
+        mm_per_hour_values, sampling, row_slice.start, col_slice.start
     )
     times = np.asarray(block["time"].values)
 
-    return _to_frame(places, sampling, times, mm_per_hour)
+    frame = _to_frame(places, sampling, times, mm_per_hour)
+    logger.info(
+        "Extracted %s rows in %s",
+        format_count(frame.height),
+        format_duration(time.monotonic() - started),
+    )
+    return frame
 
 
 def _to_frame(

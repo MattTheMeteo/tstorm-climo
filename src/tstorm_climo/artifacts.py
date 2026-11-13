@@ -26,6 +26,7 @@ worse than no reader at all.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ from tstorm_climo.extract import (
 )
 from tstorm_climo.hrrr import HRRR_ANALYSIS_DATASET_ID, PRECIPITATION_VARIABLE, Opener
 from tstorm_climo.places import PLACE_KEY_COLUMN, Place, places_from_frame
+from tstorm_climo.progress import format_count, stage
 from tstorm_climo.provenance import (
     ARCHIVE_ATTRIBUTION,
     ARCHIVE_LICENSE,
@@ -66,6 +68,8 @@ RAIN_RATE_VARIABLE = "rain_rate"
 TIME_UTC_COLUMN = "time_utc"
 VALUE_COLUMN = "value"
 VARIABLE_COLUMN = "variable"
+
+logger = logging.getLogger(__name__)
 
 # The largest selection the app serves at once. This is an architectural
 # guarantee, not just UX: it bounds the worst-case drill-in read to this
@@ -175,9 +179,21 @@ def build_hourly_observation_artifact(
         raise FileExistsError(f"artifact output already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
 
+    logger.info(
+        "Building observation artifact for %s places, %s to %s -> %s",
+        format_count(len(places)),
+        start,
+        end,
+        destination,
+    )
     series = extract_series(places, start, end, opener=opener)
     if series.height == 0:
         raise ValueError(f"no observations for {start} to {end}")
+    logger.info(
+        "Preparing %s hourly rows for %s places",
+        format_count(series.height),
+        format_count(len(places)),
+    )
 
     # Static per-place columns, one row per place, in stable key order.
     static = (
@@ -239,16 +255,18 @@ def build_hourly_observation_artifact(
         staging = Path(temporary)
         observations_dir = staging / OBSERVATIONS_DIR
         observations_dir.mkdir()
-        _write_shards(slim, observations_dir, shard_count, row_group_size)
-        _places_frame(places, static).write_parquet(staging / PLACES_FILE)
-        (staging / MANIFEST_FILE).write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        with stage(logger, f"Writing {shard_count} observation shards"):
+            _write_shards(slim, observations_dir, shard_count, row_group_size)
+        with stage(logger, "Writing places snapshot and manifest"):
+            _places_frame(places, static).write_parquet(staging / PLACES_FILE)
+            (staging / MANIFEST_FILE).write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
         if destination.exists():
             raise FileExistsError(f"artifact output already exists: {destination}")
         staging.rename(destination)
-
+    logger.info("Observation artifact ready: %s", destination)
     return manifest
 
 
@@ -293,6 +311,12 @@ def load_observation_artifact(
         _join(base, f"{OBSERVATIONS_DIR}/*.parquet"),
         storage_options=storage_options,
     )
+    logger.debug(
+        "Loaded observation artifact %s: %s places, schema v%s",
+        directory,
+        len(places_frame),
+        manifest.get("schema_version"),
+    )
     return ObservationArtifact(
         directory=directory,
         manifest=manifest,
@@ -320,9 +344,13 @@ def _write_shards(
     for index in range(0, len(keys), shard_size):
         shard_keys = keys[index : index + shard_size]
         part = slim.filter(pl.col(PLACE_KEY_COLUMN).is_in(shard_keys))
-        part.write_parquet(
-            directory / f"shard-{index // shard_size:04d}.parquet",
-            row_group_size=row_group_size,
+        shard_path = directory / f"shard-{index // shard_size:04d}.parquet"
+        part.write_parquet(shard_path, row_group_size=row_group_size)
+        logger.info(
+            "Wrote %s (%s places, %s rows)",
+            shard_path.name,
+            format_count(len(shard_keys)),
+            format_count(part.height),
         )
 
 

@@ -26,6 +26,7 @@ import xarray as xr
 from tstorm_climo.artifacts import build_hourly_observation_artifact
 from tstorm_climo.gridded import build_gridded_artifact
 from tstorm_climo.places import Place
+from tstorm_climo.progress import configure_logging
 
 START = "2026-09-01"
 END = "2026-10-01"
@@ -109,4 +110,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    configure_logging()
     main()

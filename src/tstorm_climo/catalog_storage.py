@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from tstorm_climo.progress import format_bytes
+
 DEFAULT_CATALOG_PREFIX = "tstorm-climo/catalogs"
+
+logger = logging.getLogger(__name__)
 
 
 def publish_catalog_to_s3(
@@ -46,6 +51,7 @@ def publish_catalog_to_s3(
 
     prefix = prefix.strip("/")
     published_at = datetime.now(UTC)
+    logger.info("Hashing catalog release %s", directory)
     places_sha256 = _sha256_file(places_path)
     manifest_sha256 = _sha256_file(manifest_path)
     release_id = f"{published_at.strftime('%Y%m%dT%H%M%S.%fZ')}-{places_sha256[:12]}"
@@ -55,8 +61,20 @@ def publish_catalog_to_s3(
     places_key = f"{release_prefix}/places.parquet"
     manifest_key = f"{release_prefix}/manifest.json"
 
+    logger.info(
+        "Uploading release %s to s3://%s/%s",
+        release_id,
+        bucket,
+        release_prefix,
+    )
     client.upload_file(str(places_path), bucket, places_key)
+    logger.info(
+        "Uploaded places.parquet (%s)", format_bytes(places_path.stat().st_size)
+    )
     client.upload_file(str(manifest_path), bucket, manifest_key)
+    logger.info(
+        "Uploaded manifest.json (%s)", format_bytes(manifest_path.stat().st_size)
+    )
 
     pointer: dict[str, Any] = {
         "release_id": release_id,
@@ -74,6 +92,7 @@ def publish_catalog_to_s3(
         Body=(json.dumps(pointer, indent=2, sort_keys=True) + "\n").encode(),
         ContentType="application/json",
     )
+    logger.info("Advanced latest pointer s3://%s/%s", bucket, latest_key)
     return {**pointer, "bucket": bucket, "latest_key": latest_key}
 
 

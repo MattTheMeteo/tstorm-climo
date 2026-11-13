@@ -1,6 +1,7 @@
 """Tests for the CLI argument parsing and help output."""
 
 import json
+import logging
 
 import pytest
 
@@ -309,3 +310,125 @@ def test_main_unknown_command(capsys) -> None:
         main(["bogus"])
     captured = capsys.readouterr()
     assert "invalid choice" in captured.err
+
+
+def test_verbosity_flags_work_before_and_after_the_subcommand() -> None:
+    parser = build_parser()
+    before = parser.parse_args(
+        ["-v", "summarize", "--start", "2025-07-01", "--end", "2025-07-31"]
+    )
+    after = parser.parse_args(
+        ["summarize", "--start", "2025-07-01", "--end", "2025-07-31", "-v"]
+    )
+    default = parser.parse_args(
+        ["summarize", "--start", "2025-07-01", "--end", "2025-07-31"]
+    )
+
+    assert before.verbose is True
+    assert after.verbose is True
+    assert default.verbose is False
+    assert default.quiet is False
+
+
+def test_verbosity_flags_are_mutually_exclusive_across_positions() -> None:
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "-v",
+                "summarize",
+                "-q",
+                "--start",
+                "2025-07-01",
+                "--end",
+                "2025-07-31",
+            ]
+        )
+
+
+def test_cli_keeps_progress_on_stderr_and_results_on_stdout(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    import tstorm_climo.cli as cli_module
+
+    monkeypatch.setattr(cli_module, "load_places", lambda _path: [object()])
+    manifest = {
+        "row_count": 2,
+        "place_count": 1,
+        "valid_fraction": 0.5,
+        "date_range": {
+            "observed_start": "2025-07-15T00:00:00+00:00",
+            "observed_end": "2025-07-15T01:00:00+00:00",
+        },
+    }
+
+    def build(observed_places, start, end, output):
+        logging.getLogger("tstorm_climo.cli").info("Extracting hourly series")
+        return manifest
+
+    monkeypatch.setattr(cli_module, "build_hourly_observation_artifact", build)
+    assert (
+        main(
+            [
+                "build-observations",
+                "--places",
+                "places.csv",
+                "--start",
+                "2025-07-15",
+                "--end",
+                "2025-07-15",
+                "--output",
+                str(tmp_path / "hourly-rain"),
+            ]
+        )
+        == 0
+    )
+
+    captured = capsys.readouterr()
+    assert "Extracting hourly series" in captured.err
+    assert "Extracting hourly series" not in captured.out
+    assert "2 observations" in captured.out
+
+
+def test_quiet_suppresses_progress_but_not_warnings(monkeypatch, capsys) -> None:
+    import tstorm_climo.cli as cli_module
+
+    monkeypatch.setattr(cli_module, "load_places", lambda _path: [object()])
+    manifest = {
+        "row_count": 2,
+        "place_count": 1,
+        "valid_fraction": 0.5,
+        "date_range": {
+            "observed_start": "2025-07-15T00:00:00+00:00",
+            "observed_end": "2025-07-15T01:00:00+00:00",
+        },
+    }
+
+    def build(observed_places, start, end, output):
+        logger = logging.getLogger("tstorm_climo.cli")
+        logger.info("hidden progress")
+        logger.warning("visible warning")
+        return manifest
+
+    monkeypatch.setattr(cli_module, "build_hourly_observation_artifact", build)
+    assert (
+        main(
+            [
+                "build-observations",
+                "--quiet",
+                "--places",
+                "places.csv",
+                "--start",
+                "2025-07-15",
+                "--end",
+                "2025-07-15",
+                "--output",
+                "hourly-rain",
+            ]
+        )
+        == 0
+    )
+
+    captured = capsys.readouterr()
+    assert "hidden progress" not in captured.err
+    assert "visible warning" in captured.err
+    assert "2 observations" in captured.out

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 
 import httpx
+
+from tstorm_climo.progress import format_count, format_duration
 
 # Overpass API endpoint. Public instance; see https://wiki.osm.org/Overpass_API.
 OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
@@ -14,6 +17,8 @@ OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
 USER_AGENT = (
     "tstorm-climo/0.1 (precipitation climatology research; contact mwl5399@gmail.com)"
 )
+
+logger = logging.getLogger(__name__)
 
 # OSM (key, value) tag for each supported place kind.
 KIND_TAGS: dict[str, tuple[str, str]] = {
@@ -77,7 +82,15 @@ def run_query(
     """
     post = transport or httpx.post
     last_error: str = "no attempt made"
+    started = time.monotonic()
+    logger.info(
+        "Querying Overpass at %s (%s query bytes, up to %s attempts)",
+        endpoint,
+        format_count(len(query.encode("utf-8"))),
+        max_retries,
+    )
     for attempt in range(1, max_retries + 1):
+        logger.debug("Overpass attempt %s/%s", attempt, max_retries)
         try:
             response: httpx.Response = post(
                 endpoint,
@@ -92,9 +105,21 @@ def run_query(
         else:
             if response.is_success:
                 elements: list[dict] = response.json()["elements"]
+                logger.info(
+                    "Overpass returned %s elements in %s",
+                    format_count(len(elements)),
+                    format_duration(time.monotonic() - started),
+                )
                 return elements
             last_error = f"HTTP {response.status_code} {response.text[:200]}"
         if attempt < max_retries:
+            logger.warning(
+                "Overpass attempt %s/%s failed (%s); retrying in %s",
+                attempt,
+                max_retries,
+                last_error,
+                format_duration(backoff_seconds),
+            )
             time.sleep(backoff_seconds)
     raise RuntimeError(
         f"Overpass query failed after {max_retries} attempts: {last_error}"

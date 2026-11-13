@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import httpx
 import osmium.geom
@@ -127,6 +128,55 @@ def test_download_streams_pbf_and_records_http_metadata(tmp_path) -> None:
     assert metadata["bytes"] == len(OSM_XML)
     assert metadata["etag"] == '"snapshot"'
     assert len(metadata["sha256"]) == 64
+
+
+def test_download_reports_percent_when_content_length_is_known(
+    tmp_path, caplog
+) -> None:
+    payload = b"x" * 2048
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            stream=httpx.ByteStream(payload),
+            headers={"Content-Length": str(len(payload))},
+        )
+
+    caplog.set_level(logging.INFO, logger="tstorm_climo.geofabrik")
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    download_geofabrik_pbf(
+        "north-america/us/massachusetts", tmp_path / "extract.osm.pbf", client=client
+    )
+
+    assert "2.0 KiB / 2.0 KiB (100.0%)" in caplog.text
+
+
+def test_download_omits_percent_without_a_content_length(tmp_path, caplog) -> None:
+    payload = b"x" * 2048
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=httpx.ByteStream(payload))
+
+    caplog.set_level(logging.INFO, logger="tstorm_climo.geofabrik")
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    download_geofabrik_pbf(
+        "north-america/us/massachusetts", tmp_path / "extract.osm.pbf", client=client
+    )
+
+    assert "Downloaded 2.0 KiB" in caplog.text
+    assert "%" not in caplog.text
+
+
+def test_extract_logs_scan_totals_and_geometry_stage(tmp_path, caplog) -> None:
+    pbf = tmp_path / "sample.osm"
+    pbf.write_bytes(OSM_XML)
+
+    caplog.set_level(logging.INFO, logger="tstorm_climo.geofabrik")
+    extract_geofabrik_places(pbf, ["golf_course", "beach"])
+
+    assert "PBF scan complete:" in caplog.text
+    assert "matched places" in caplog.text
+    assert "Computing representative points for 2 geometries" in caplog.text
 
 
 def test_build_catalog_discards_download_and_writes_release(tmp_path) -> None:

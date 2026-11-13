@@ -37,6 +37,7 @@ one format, for the same reason as in :mod:`~tstorm_climo.artifacts`.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -59,6 +60,7 @@ from tstorm_climo.hrrr import (
     to_mm_per_hour,
 )
 from tstorm_climo.places import Place
+from tstorm_climo.progress import format_count, stage
 from tstorm_climo.provenance import (
     ARCHIVE_ATTRIBUTION,
     ARCHIVE_LICENSE,
@@ -70,6 +72,8 @@ from tstorm_climo.thresholds import DEFAULT_WET_THRESHOLD_MM_PER_HOUR
 GRIDDED_ARTIFACT_TYPE = "gridded_display"
 GRIDDED_SCHEMA_VERSION = 1
 MANIFEST_FILE = "manifest.json"
+
+logger = logging.getLogger(__name__)
 
 # Chunks with time as the leading axis so a windowed view (a month, a
 # year) touches only the chunk range it spans, and the full block as the
@@ -140,10 +144,27 @@ def build_gridded_artifact(
         raise FileExistsError(f"artifact output already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
 
+    logger.info(
+        "Building gridded artifact for %s places, %s to %s -> %s",
+        format_count(len(places)),
+        start,
+        end,
+        destination,
+    )
     ds = open_analysis(opener=opener)
-    grid = Grid.from_dataset(ds)
+    with stage(logger, "Building the grid lookup"):
+        grid = Grid.from_dataset(ds)
     sampling = sampling_cells(grid, places)
     row_slice, col_slice = sampling_bounds(sampling, grid)
+    logger.info(
+        "Selected a %sx%s node block (rows x columns) at y%s:%s, x%s:%s",
+        row_slice.stop - row_slice.start,
+        col_slice.stop - col_slice.start,
+        row_slice.start,
+        row_slice.stop,
+        col_slice.start,
+        col_slice.stop,
+    )
 
     # Slice time and space *before* converting units, as everywhere above
     # hrrr.py: the multiply would otherwise materialize the whole archive.
@@ -154,7 +175,9 @@ def build_gridded_artifact(
     )
     if block.sizes["time"] == 0:
         raise ValueError(f"no analysis steps for {start} to {end}")
-    rate = to_mm_per_hour(block)
+    logger.info("Preparing %s hourly steps", format_count(block.sizes["time"]))
+    with stage(logger, "Converting precipitation rates to mm/h"):
+        rate = to_mm_per_hour(block)
     dataset = rate.to_dataset(name=PRECIPITATION_MM_PER_HOUR)
     time_chunk = min(chunk_hours, block.sizes["time"])
 
@@ -212,28 +235,33 @@ def build_gridded_artifact(
         storage = icechunk.local_filesystem_storage(str(staging))
         repo = icechunk.Repository.create(storage)
         session = repo.writable_session("main")
-        dataset.to_zarr(
-            session.store,
-            zarr_format=3,
-            consolidated=False,
-            encoding={
-                PRECIPITATION_MM_PER_HOUR: {
-                    "chunks": (time_chunk, block.sizes["y"], block.sizes["x"]),
-                }
-            },
-        )
-        session.commit(
-            f"gridded display block y{row_slice.start}:{row_slice.stop}"
-            f"/x{col_slice.start}:{col_slice.stop}, {start}..{end}"
-        )
-        (staging / MANIFEST_FILE).write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        with stage(
+            logger,
+            f"Writing {time_chunk}-hour Zarr chunks to the Icechunk store",
+        ):
+            dataset.to_zarr(
+                session.store,
+                zarr_format=3,
+                consolidated=False,
+                encoding={
+                    PRECIPITATION_MM_PER_HOUR: {
+                        "chunks": (time_chunk, block.sizes["y"], block.sizes["x"]),
+                    }
+                },
+            )
+            session.commit(
+                f"gridded display block y{row_slice.start}:{row_slice.stop}"
+                f"/x{col_slice.start}:{col_slice.stop}, {start}..{end}"
+            )
+        with stage(logger, "Writing manifest"):
+            (staging / MANIFEST_FILE).write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
         if destination.exists():
             raise FileExistsError(f"artifact output already exists: {destination}")
         staging.rename(destination)
-
+    logger.info("Gridded artifact ready: %s", destination)
     return manifest
 
 
@@ -269,6 +297,12 @@ def load_gridded_artifact(directory: str | Path) -> GriddedArtifact:
     repo = icechunk.Repository.open(storage)
     session = repo.readonly_session(branch="main")
     dataset = xr.open_zarr(session.store, consolidated=False, mask_and_scale=True)
+    logger.debug(
+        "Loaded gridded artifact %s: %s places, schema v%s",
+        directory,
+        manifest.get("place_count"),
+        manifest.get("schema_version"),
+    )
     return GriddedArtifact(directory=directory, manifest=manifest, dataset=dataset)
 
 

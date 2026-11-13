@@ -7,18 +7,25 @@ a scan plan, not data -- so startup stays cheap and idle memory stays low.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+import logging
+import sys
+import time
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import Response
 
 from tstorm_climo.artifacts import load_observation_artifact
 from tstorm_climo.gridded import load_gridded_artifact
+from tstorm_climo.progress import format_count, format_duration
 
 from .api import router
 from .config import Settings
 from .state import Artifacts
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -27,6 +34,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        started = time.monotonic()
+        logger.info(
+            "Starting tstorm-climo API (observation artifact: %s, gridded: %s)",
+            resolved.artifact_dir or "none",
+            resolved.gridded_dir or "none",
+        )
+        # Loading failures propagate to the server, which logs the
+        # traceback. The start line above already names both sources.
         observation = (
             load_observation_artifact(resolved.artifact_dir)
             if resolved.artifact_dir is not None
@@ -37,10 +52,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if resolved.gridded_dir is not None
             else None
         )
+        if observation is None:
+            logger.warning(
+                "No observation artifact configured; data endpoints will return 503"
+            )
+        else:
+            logger.info(
+                "Loaded observation artifact: %s places, %s to %s",
+                format_count(len(observation.places)),
+                observation.observed_start,
+                observation.observed_end,
+            )
+        if gridded is None:
+            logger.info("No gridded artifact configured; /api/wetness returns 503")
+        else:
+            logger.info(
+                "Loaded gridded artifact: %s places, %s to %s",
+                format_count(int(gridded.manifest.get("place_count") or 0)),
+                gridded.observed_start,
+                gridded.observed_end,
+            )
         app.state.artifacts = Artifacts(observation=observation, gridded=gridded)
+        logger.info("API ready in %s", format_duration(time.monotonic() - started))
         try:
             yield
         finally:
+            logger.info("Shutting down tstorm-climo API")
             if gridded is not None:
                 gridded.dataset.close()
 
@@ -51,6 +88,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @application.middleware("http")
+    async def log_request(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        """Time each request; warn when one exceeds the configured budget.
+
+        A request that raises never produces a response. Rather than
+        catching every exception and re-raising it, the ``finally`` block
+        notices the missing response and logs the request and its timing;
+        the exception itself keeps propagating to the server's error
+        handler, which logs the traceback.
+        """
+        started = time.perf_counter()
+        response: Response | None = None
+        try:
+            response = await call_next(request)
+        finally:
+            elapsed = time.perf_counter() - started
+            if response is None:
+                # BaseExceptions such as cancellation are not request
+                # failures; only Exception is worth an error line.
+                failure = sys.exc_info()[1]
+                if isinstance(failure, Exception):
+                    logger.error(
+                        "%s %s failed after %s",
+                        request.method,
+                        request.url.path,
+                        format_duration(elapsed),
+                    )
+            elif elapsed >= resolved.slow_request_seconds:
+                logger.warning(
+                    "%s %s -> %s in %s (slow request)",
+                    request.method,
+                    request.url.path,
+                    response.status_code,
+                    format_duration(elapsed),
+                )
+            else:
+                logger.debug(
+                    "%s %s -> %s in %s",
+                    request.method,
+                    request.url.path,
+                    response.status_code,
+                    format_duration(elapsed),
+                )
+        assert response is not None
+        return response
 
     @application.get("/health")
     def health() -> dict[str, str]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -95,17 +96,81 @@ PLACES = [
 ]
 
 
-@pytest.fixture
-def client(tmp_path: Path) -> Iterator[TestClient]:
+def build_artifacts(tmp_path: Path) -> tuple[Path, Path]:
+    """Build the observation and gridded artifacts the API tests serve."""
     observations = tmp_path / "observations"
     gridded = tmp_path / "gridded"
     build_hourly_observation_artifact(
         PLACES, START, "2025-07-16", observations, opener=make_opener(), shard_count=2
     )
     build_gridded_artifact(PLACES, START, "2025-07-16", gridded, opener=make_opener())
+    return observations, gridded
+
+
+@pytest.fixture
+def client(tmp_path: Path) -> Iterator[TestClient]:
+    observations, gridded = build_artifacts(tmp_path)
     app = create_app(Settings(artifact_dir=str(observations), gridded_dir=str(gridded)))
     with TestClient(app) as test_client:
         yield test_client
+
+
+def test_startup_logs_loaded_artifacts(tmp_path: Path, caplog) -> None:
+    observations, gridded = build_artifacts(tmp_path)
+    caplog.set_level(logging.INFO, logger="apps.web.backend.app")
+
+    app = create_app(Settings(artifact_dir=str(observations), gridded_dir=str(gridded)))
+    with TestClient(app):
+        pass
+
+    assert "Loaded observation artifact: 3 places" in caplog.text
+    assert "Loaded gridded artifact: 3 places" in caplog.text
+    assert "API ready in" in caplog.text
+
+
+def test_startup_failure_keeps_the_context_and_propagates(
+    tmp_path: Path, caplog
+) -> None:
+    caplog.set_level(logging.INFO, logger="apps.web.backend.app")
+    app = create_app(Settings(artifact_dir=str(tmp_path / "missing"), gridded_dir=None))
+
+    with pytest.raises(FileNotFoundError), TestClient(app):
+        pass
+
+    assert "Starting tstorm-climo API" in caplog.text
+    assert str(tmp_path / "missing") in caplog.text
+
+
+def test_request_failures_are_logged_with_timing(caplog) -> None:
+    app = create_app(Settings(artifact_dir=None, gridded_dir=None))
+
+    @app.get("/boom")
+    def boom() -> None:
+        raise RuntimeError("boom")
+
+    caplog.set_level(logging.ERROR, logger="apps.web.backend.app")
+    with TestClient(app, raise_server_exceptions=False) as client:
+        assert client.get("/boom").status_code == 500
+
+    assert "GET /boom failed after" in caplog.text
+
+
+def test_requests_over_the_slow_budget_log_a_warning(tmp_path: Path, caplog) -> None:
+    observations, gridded = build_artifacts(tmp_path)
+    caplog.set_level(logging.WARNING, logger="apps.web.backend.app")
+
+    app = create_app(
+        Settings(
+            artifact_dir=str(observations),
+            gridded_dir=str(gridded),
+            slow_request_seconds=0.0,
+        )
+    )
+    with TestClient(app) as test_client:
+        assert test_client.get("/health").status_code == 200
+
+    assert "GET /health -> 200" in caplog.text
+    assert "(slow request)" in caplog.text
 
 
 def test_health(client: TestClient) -> None:

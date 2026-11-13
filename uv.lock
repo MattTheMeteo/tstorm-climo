@@ -1381,6 +1381,7 @@ catalog-s3 = [
 dev = [
     { name = "boto3" },
     { name = "httpx2" },
+    { name = "pandas" },
     { name = "pyarrow" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -1414,6 +1415,7 @@ provides-extras = ["catalog-s3"]
 dev = [
     { name = "boto3", specifier = ">=1.43.123" },
     { name = "httpx2", specifier = ">=2.16.0" },
+    { name = "pandas", specifier = ">=2.2" },
     { name = "pyarrow", specifier = ">=26.0.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },

@@ -82,6 +82,7 @@ export function tooltipTextFor(object: unknown): string | null {
 }
 
 export function placeCoordinates(place: PlaceRecord): [number, number] {
+  if (place.geometry.type === "Point") return place.geometry.coordinates;
   return [place.lon, place.lat];
 }
 

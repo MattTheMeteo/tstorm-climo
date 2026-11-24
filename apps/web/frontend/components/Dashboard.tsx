@@ -1,36 +1,61 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  getCoverage,
-  getPlaces,
-  getWetness,
-  postReport,
-} from "@/lib/api";
-import type {
-  Coverage,
-  PlaceRecord,
-  Report,
-  WetnessGeoJSON,
-} from "@/lib/types";
+import { useCallback, useEffect, useState } from "react";
+import { getCoverage, getPlaces, postReport } from "@/lib/api";
+import type { Coverage, PlaceRecord, Report } from "@/lib/types";
 import { selectionAfterToggle } from "@/lib/presentation";
 import Charts from "./Charts";
 import Leaderboard from "./Leaderboard";
-import WetnessMap from "./WetnessMap";
+import CourseMap from "./CourseMap";
 
 const MAX_PLACES = 20;
+type Theme = "light" | "dark";
 
 export default function Dashboard() {
+  const [theme, setTheme] = useState<Theme | null>(null);
   const [coverage, setCoverage] = useState<Coverage | null>(null);
   const [places, setPlaces] = useState<PlaceRecord[]>([]);
-  const [kind, setKind] = useState("all");
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [threshold, setThreshold] = useState(0.05);
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [report, setReport] = useState<Report | null>(null);
-  const [wetness, setWetness] = useState<WetnessGeoJSON | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const storageKey = "course-climatology-theme";
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const savedTheme = window.localStorage.getItem(storageKey);
+    setTheme(
+      savedTheme === "dark" || savedTheme === "light"
+        ? savedTheme
+        : mediaQuery.matches
+          ? "dark"
+          : "light",
+    );
+
+    const handleSystemThemeChange = (event: MediaQueryListEvent) => {
+      if (window.localStorage.getItem(storageKey) === null) {
+        setTheme(event.matches ? "dark" : "light");
+      }
+    };
+    mediaQuery.addEventListener("change", handleSystemThemeChange);
+    return () =>
+      mediaQuery.removeEventListener("change", handleSystemThemeChange);
+  }, []);
+
+  useEffect(() => {
+    if (theme === null) return;
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+
+  const toggleTheme = useCallback(() => {
+    setTheme((current) => {
+      const next = current === "dark" ? "light" : "dark";
+      window.localStorage.setItem("course-climatology-theme", next);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -43,30 +68,15 @@ export default function Dashboard() {
       .catch((err: unknown) => {
         if (!controller.signal.aborted) setError(String(err));
       });
-    getPlaces(undefined, { signal: controller.signal })
+    getPlaces("golf_course", { signal: controller.signal })
       .then((res) => {
         setPlaces(res.places);
-        setSelectedKeys(res.places.slice(0, MAX_PLACES).map((p) => p.place_key));
       })
       .catch((err: unknown) => {
         if (!controller.signal.aborted) setError(String(err));
       });
     return () => controller.abort();
   }, []);
-
-  useEffect(() => {
-    if (!coverage?.gridded) return;
-    const controller = new AbortController();
-    getWetness(
-      { start: start || undefined, end: end || undefined, threshold },
-      { signal: controller.signal },
-    )
-      .then(setWetness)
-      .catch((err: unknown) => {
-        if (!controller.signal.aborted) setError(String(err));
-      });
-    return () => controller.abort();
-  }, [coverage?.gridded, start, end, threshold]);
 
   useEffect(() => {
     if (selectedKeys.length === 0) {
@@ -91,104 +101,49 @@ export default function Dashboard() {
     return () => controller.abort();
   }, [selectedKeys, start, end, threshold]);
 
-  const kinds = useMemo(
-    () => ["all", ...(coverage?.kinds ?? [])],
-    [coverage?.kinds],
-  );
-
-  const visiblePlaces = useMemo(
-    () => (kind === "all" ? places : places.filter((p) => p.kind === kind)),
-    [places, kind],
-  );
-
-  const selectedPlaces = useMemo(
-    () => places.filter((p) => selectedKeys.includes(p.place_key)),
-    [places, selectedKeys],
-  );
-
-  const onKindChange = useCallback(
-    (value: string) => {
-      setKind(value);
-      const subset =
-        value === "all" ? places : places.filter((p) => p.kind === value);
-      setSelectedKeys(subset.slice(0, MAX_PLACES).map((p) => p.place_key));
-    },
-    [places],
-  );
-
   const togglePlace = useCallback((key: string) => {
     setSelectedKeys((keys) => selectionAfterToggle(keys, key, MAX_PLACES));
   }, []);
+  const activeTheme = theme ?? "light";
 
   return (
     <main>
-      <h1>North Shore rain climatology</h1>
-      <p className="muted">
-        {coverage
-          ? `${coverage.place_count} places · ${coverage.variable ?? ""} (${coverage.units ?? ""}) · ${coverage.observed_start?.slice(0, 10) ?? ""} → ${coverage.observed_end?.slice(0, 10) ?? ""}`
-          : "Loading…"}
-      </p>
+      <header className="page-header">
+        <div>
+          <h1>Course Climatology</h1>
+          <p className="muted">
+            {places.length > 0
+              ? `Explore ${places.length} North Shore golf courses. Select up to ${MAX_PLACES} to compare their rain histories.`
+              : "Loading golf courses…"}
+          </p>
+        </div>
+        <button
+          type="button"
+          className="theme-switch"
+          role="switch"
+          aria-label="Dark mode"
+          aria-checked={activeTheme === "dark"}
+          onClick={toggleTheme}
+        >
+          <span className="theme-switch-thumb" aria-hidden="true" />
+        </button>
+      </header>
 
       {error && <div className="error">{error}</div>}
 
-      <div className="controls">
-        <div className="control">
-          <label htmlFor="kind">Attraction kind</label>
-          <select
-            id="kind"
-            value={kind}
-            onChange={(e) => onKindChange(e.target.value)}
-          >
-            {kinds.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </select>
-        </div>
+      <CourseMap
+        places={places}
+        selectedKeys={selectedKeys}
+        onTogglePlace={togglePlace}
+        isDark={activeTheme === "dark"}
+      />
 
-        <div className="control">
-          <label htmlFor="threshold">Wet threshold (mm/h)</label>
-          <input
-            id="threshold"
-            type="number"
-            min={0}
-            max={2}
-            step={0.01}
-            value={threshold}
-            onChange={(e) => setThreshold(Number(e.target.value))}
-          />
-        </div>
-
-        <div className="control">
-          <label htmlFor="start">Start</label>
-          <input
-            id="start"
-            type="date"
-            value={start}
-            min={coverage?.observed_start?.slice(0, 10) ?? undefined}
-            max={end || coverage?.observed_end?.slice(0, 10) || undefined}
-            onChange={(e) => setStart(e.target.value)}
-          />
-        </div>
-
-        <div className="control">
-          <label htmlFor="end">End</label>
-          <input
-            id="end"
-            type="date"
-            value={end}
-            min={start || coverage?.observed_start?.slice(0, 10) || undefined}
-            max={coverage?.observed_end?.slice(0, 10) ?? undefined}
-            onChange={(e) => setEnd(e.target.value)}
-          />
-        </div>
-      </div>
-
-      <fieldset className="control place-control">
-        <legend>Places ({selectedKeys.length} selected, up to {MAX_PLACES})</legend>
+      <details className="course-picker">
+        <summary>
+          Choose by name · {selectedKeys.length} of {MAX_PLACES} selected
+        </summary>
         <div className="place-select">
-          {visiblePlaces.map((place) => (
+          {places.map((place) => (
             <label key={place.place_key}>
               <input
                 type="checkbox"
@@ -203,13 +158,51 @@ export default function Dashboard() {
             </label>
           ))}
         </div>
-      </fieldset>
+      </details>
+
+      {selectedKeys.length > 0 && (
+        <div className="controls" aria-label="Analysis settings">
+          <div className="control">
+            <label htmlFor="threshold">Wet threshold (mm/h)</label>
+            <input
+              id="threshold"
+              type="number"
+              min={0}
+              max={2}
+              step={0.01}
+              value={threshold}
+              onChange={(e) => setThreshold(Number(e.target.value))}
+            />
+          </div>
+
+          <div className="control">
+            <label htmlFor="start">Start</label>
+            <input
+              id="start"
+              type="date"
+              value={start}
+              min={coverage?.observed_start?.slice(0, 10) ?? undefined}
+              max={end || coverage?.observed_end?.slice(0, 10) || undefined}
+              onChange={(e) => setStart(e.target.value)}
+            />
+          </div>
+
+          <div className="control">
+            <label htmlFor="end">End</label>
+            <input
+              id="end"
+              type="date"
+              value={end}
+              min={start || coverage?.observed_start?.slice(0, 10) || undefined}
+              max={coverage?.observed_end?.slice(0, 10) ?? undefined}
+              onChange={(e) => setEnd(e.target.value)}
+            />
+          </div>
+        </div>
+      )}
 
       {report && <Leaderboard report={report} />}
       {report && <Charts report={report} />}
-      {coverage?.gridded && (
-        <WetnessMap wetness={wetness} places={selectedPlaces} />
-      )}
     </main>
   );
 }

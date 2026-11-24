@@ -187,18 +187,21 @@ The observation artifact backs the leaderboard, monthly, and local-hour
 views (attraction kind, place selection, threshold, and date range are
 bounded by the artifact's own coverage); the gridded store enables the
 wet-hours-per-node map over its last year. `--chunk-hours` defaults to
-about a month. For a quick look without building anything real:
+about a month. For a quick look without building HRRR data, the demo uses
+the real course locations from `places_north_shore.csv` with synthetic
+rainfall values. The map shows course locations; the synthetic grid is used
+only to generate demo rain data:
 
 ```sh
-uv run python scripts/demo_artifact.py   # network-free synthetic pair
+uv run python scripts/demo_artifact.py   # real course locations, synthetic rain
 ```
 
 To run the local app against those demo artifacts, use one terminal for the
 API and another for Next.js:
 
 ```sh
-export TSTORM_CLIMO_ARTIFACT="artifacts/demo/observations"
-export TSTORM_CLIMO_GRIDDED="artifacts/demo/gridded"
+export TSTORM_CLIMO_ARTIFACT="artifacts/demo-course-climatology/observations"
+export TSTORM_CLIMO_GRIDDED="artifacts/demo-course-climatology/gridded"
 uv run --group web uvicorn apps.web.backend.main:app --reload
 ```
 

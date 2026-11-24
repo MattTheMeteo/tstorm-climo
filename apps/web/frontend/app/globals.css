@@ -1,5 +1,37 @@
 :root {
   color-scheme: light;
+  --page-bg: #f9fafb;
+  --surface: #ffffff;
+  --text: #111827;
+  --muted: #6b7280;
+  --label: #374151;
+  --border: #e5e7eb;
+  --subtle-border: #f3f4f6;
+  --subtle-surface: #f9fafb;
+  --warning-bg: #fffbeb;
+  --warning-border: #fde68a;
+  --error-bg: #fef2f2;
+  --error-border: #fecaca;
+  --error-text: #b91c1c;
+  --chart-grid: #d1d5db;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page-bg: #0b1220;
+  --surface: #111827;
+  --text: #f3f4f6;
+  --muted: #9ca3af;
+  --label: #d1d5db;
+  --border: #374151;
+  --subtle-border: #273244;
+  --subtle-surface: #1f2937;
+  --warning-bg: #332b16;
+  --warning-border: #80651d;
+  --error-bg: #391c24;
+  --error-border: #7f2938;
+  --error-text: #fecaca;
+  --chart-grid: #4b5563;
 }
 
 * {
@@ -11,8 +43,8 @@ body {
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
     sans-serif;
-  color: #111827;
-  background: #f9fafb;
+  color: var(--text);
+  background: var(--page-bg);
 }
 
 main {
@@ -21,13 +53,22 @@ main {
   padding: 1.5rem;
 }
 
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
 h1 {
   font-size: 1.5rem;
   margin: 0 0 0.25rem;
 }
 
 .muted {
-  color: #6b7280;
+  color: var(--muted);
+  margin: 0.25rem 0 0;
 }
 
 .controls {
@@ -36,8 +77,8 @@ h1 {
   gap: 1rem;
   align-items: flex-end;
   padding: 1rem;
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
   margin-bottom: 1rem;
 }
@@ -51,15 +92,24 @@ h1 {
 .control label {
   font-size: 0.75rem;
   font-weight: 600;
-  color: #374151;
+  color: var(--label);
+}
+
+.controls input,
+.controls select {
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  padding: 0.3rem 0.4rem;
 }
 
 table.leaderboard {
   width: 100%;
   min-width: 680px;
   border-collapse: collapse;
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
   overflow: hidden;
 }
@@ -84,39 +134,77 @@ table.leaderboard th,
 table.leaderboard td {
   text-align: left;
   padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--subtle-border);
   font-size: 0.875rem;
 }
 
 table.leaderboard th {
-  background: #f9fafb;
+  background: var(--subtle-surface);
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.02em;
-  color: #6b7280;
+  color: var(--muted);
 }
 
 .panel {
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
   padding: 1rem;
   margin-bottom: 1rem;
+}
+
+.course-map-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.course-map-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1rem 0.75rem;
+}
+
+.course-map-heading h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.course-map-heading p {
+  text-align: right;
+}
+
+.course-picker {
+  margin: 0 0 1rem;
+  color: var(--label);
+}
+
+.course-picker summary {
+  width: fit-content;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.course-picker .place-select {
+  margin-top: 0.75rem;
 }
 
 .reliability {
   font-size: 0.875rem;
   padding: 0.5rem 0.75rem;
   border-radius: 0.375rem;
-  background: #fffbeb;
-  border: 1px solid #fde68a;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
   margin-bottom: 0.75rem;
 }
 
 .error {
-  color: #b91c1c;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  color: var(--error-text);
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
   border-radius: 0.375rem;
   padding: 0.5rem 0.75rem;
   margin-bottom: 1rem;
@@ -129,8 +217,8 @@ table.leaderboard th {
   max-height: 9rem;
   overflow: auto;
   padding: 0.5rem;
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
 }
 
@@ -140,21 +228,88 @@ table.leaderboard th {
   gap: 0.25rem;
   font-size: 0.8rem;
   padding: 0.25rem 0.5rem;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 999px;
   cursor: pointer;
+  color: var(--text);
 }
 
-.place-control {
-  min-width: 0;
-  margin: 0 0 1rem;
-  padding: 0;
+.theme-switch {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  width: 46px;
+  height: 28px;
+  padding: 2px;
   border: 0;
+  border-radius: 999px;
+  background: #c7c7cc;
+  cursor: pointer;
+  transition: background-color 180ms ease;
 }
 
-.place-control legend {
-  margin-bottom: 0.35rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: #374151;
+.theme-switch[aria-checked="true"] {
+  background: #007aff;
+}
+
+.theme-switch-thumb {
+  display: block;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 28%);
+  transform: translateX(0);
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.theme-switch[aria-checked="true"] .theme-switch-thumb {
+  transform: translateX(18px);
+}
+
+.theme-switch:focus-visible,
+.course-picker summary:focus-visible {
+  outline: 2px solid #14b8a6;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-switch,
+  .theme-switch-thumb {
+    transition: none;
+  }
+}
+
+.recharts-cartesian-grid line {
+  stroke: var(--chart-grid);
+}
+
+.recharts-text {
+  fill: var(--muted);
+}
+
+.recharts-default-tooltip {
+  color: var(--text) !important;
+  background: var(--surface) !important;
+  border-color: var(--border) !important;
+}
+
+.recharts-tooltip-label,
+.recharts-tooltip-item {
+  color: var(--text) !important;
+}
+
+@media (max-width: 640px) {
+  main {
+    padding: 1rem;
+  }
+
+  .course-map-heading {
+    display: block;
+  }
+
+  .course-map-heading p {
+    text-align: left;
+  }
 }

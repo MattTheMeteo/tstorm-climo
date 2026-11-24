@@ -1,14 +1,14 @@
-"""Build small demo artifacts for local development of the web app and API.
+"""Build demo artifacts using real course coordinates and synthetic rainfall.
 
-The demo archive is synthetic (30 days of hourly precipitation over a
-10x12 grid near the North Shore, ~15% of hours wet, one noon gap) so
-this runs with no network and no HRRR reads. It writes both formats the
-app reads:
+The demo uses the committed OpenStreetMap course locations and a synthetic
+30-day precipitation archive (~15% of hours wet, one noon gap), so it runs
+with no network and no HRRR reads. It writes both artifact formats:
 
-- ``artifacts/demo/observations`` — the hourly observation artifact the
+- ``artifacts/demo-course-climatology/observations`` — the hourly artifact the
   app's tables and charts read.
-- ``artifacts/demo/gridded`` — the gridded display store the app's map
-  view reads.
+- ``artifacts/demo-course-climatology/gridded`` — a gridded store for API
+  development. The course map uses original course coordinates, not these
+  grid-node coordinates.
 
 Run and follow the printed export lines:
 
@@ -25,21 +25,20 @@ import xarray as xr
 
 from tstorm_climo.artifacts import build_hourly_observation_artifact
 from tstorm_climo.gridded import build_gridded_artifact
-from tstorm_climo.places import Place
+from tstorm_climo.places import Place, load_places
 from tstorm_climo.progress import configure_logging
 
 START = "2026-09-01"
 END = "2026-10-01"
 HOURS = 24 * 30
-DEMO_DIR = Path("artifacts") / "demo"
+DEMO_DIR = Path("artifacts") / "demo-course-climatology"
 
 # Rows (y) run south→north; columns (x) west→east.
-ROWS, COLS = 10, 12
-GRID_LAT = np.broadcast_to(42.35 + np.arange(ROWS)[:, None] * 0.06, (ROWS, COLS)).copy()
-GRID_LON = np.broadcast_to(-71.2 + np.arange(COLS)[None, :] * 0.06, (ROWS, COLS)).copy()
-
-COURSES = ("Turfway Downs", "Salem Links", "Ipswich Bluffs", "Cape Ann CC")
-BEACHES = ("Devereux Beach", "Singing Beach", "Revere Sands")
+ROWS, COLS = 12, 12
+GRID_LAT = np.broadcast_to(42.30 + np.arange(ROWS)[:, None] * 0.06, (ROWS, COLS)).copy()
+GRID_LON = np.broadcast_to(
+    -71.24 + np.arange(COLS)[None, :] * 0.06, (ROWS, COLS)
+).copy()
 
 
 def make_opener():
@@ -64,29 +63,13 @@ def make_opener():
     return opener
 
 
-def place_at(osm_id: int, name: str, kind: str, row: int, col: int) -> Place:
-    return Place(
-        osm_type="node",
-        osm_id=osm_id,
-        name=name,
-        kind=kind,
-        lat=float(GRID_LAT[row, col]),
-        lon=float(GRID_LON[row, col]),
-        timezone="America/New_York",
-    )
-
-
 def demo_places() -> list[Place]:
-    places = [
-        place_at(1000 + i, name, "golf_course", 2, 2 * i)
-        for i, name in enumerate(COURSES)
+    """Load real course points; only their precipitation values are synthetic."""
+    return [
+        place
+        for place in load_places("places_north_shore.csv")
+        if place.kind == "golf_course"
     ]
-    # Two courses on one node, so the app shows the tie treatment.
-    places.append(place_at(1999, "Turfway Par-3", "golf_course", 2, 4))
-    places.extend(
-        place_at(2000 + i, name, "beach", 7, 3 * i) for i, name in enumerate(BEACHES)
-    )
-    return places
 
 
 def main() -> None:
@@ -104,7 +87,9 @@ def main() -> None:
     build_hourly_observation_artifact(places, START, END, observations, opener=opener)
     build_gridded_artifact(places, START, END, gridded, opener=opener, chunk_hours=168)
 
-    print("Demo artifacts built. Point the app at them with:")
+    print(
+        "Demo artifacts built with real course locations. Point the app at them with:"
+    )
     print(f'  export TSTORM_CLIMO_ARTIFACT="{observations}"')
     print(f'  export TSTORM_CLIMO_GRIDDED="{gridded}"')
 

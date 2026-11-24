@@ -39,3 +39,25 @@ We should also always be checking that we're using rust as our linter.
 Ultimately, I'd like to host a proper web application (FastAPI + Next.js) that shows our analysis
 of the thunderstorm / rain climatologies of North Shore golf courses — the first of several apps
 on the reusable `tstorm_climo` package.
+
+## Branching
+When creating a new piece of work, create it in a branch.
+
+Particularly for Github issues, use this format: 
+- <issue-type>/GH-issue#-short-description
+- This could be for features, bugfixes, or hotfixes.
+
+In your commits, please use GitHub's approved keywords in the commit message to link the
+branch and issue.
+
+You can link a pull request to an issue by using a supported keyword in the pull request's description or in a commit message. The pull request must be on the default branch.
+
+- close
+- closes
+- closed
+- fix
+- fixes
+- fixed
+- resolve
+- resolves
+- resolved

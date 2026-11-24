@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { PlaceRecord, WetnessGeoJSON } from "@/lib/types";
+import type { PlaceRecord } from "@/lib/types";
 
 vi.mock("@deck.gl/react", () => ({ default: () => null }));
 vi.mock("@deck.gl/layers", () => ({
@@ -14,18 +14,7 @@ vi.mock("@deck.gl/layers", () => ({
 vi.mock("react-map-gl/maplibre", () => ({ default: () => null }));
 vi.mock("maplibre-gl", () => ({ setWorkerUrl: vi.fn() }));
 
-import WetnessMap from "@/components/WetnessMap";
-
-const mapData: WetnessGeoJSON = {
-  type: "FeatureCollection",
-  features: [
-    {
-      type: "Feature",
-      geometry: { type: "Point", coordinates: [-70.9, 42.5] },
-      properties: { wet_hours: 2, valid_hours: 4, wet_fraction: 0.5 },
-    },
-  ],
-};
+import CourseMap from "@/components/CourseMap";
 
 const course: PlaceRecord = {
   place_key: "osm:way:1",
@@ -37,11 +26,23 @@ const course: PlaceRecord = {
   geometry: { type: "Point", coordinates: [-70.9, 42.5] },
 };
 
-describe("WetnessMap component", () => {
-  it("renders the map panel without creating a network or WebGL renderer", () => {
-    const { container } = render(<WetnessMap wetness={mapData} places={[course]} />);
+describe("CourseMap component", () => {
+  it("renders the golf course map panel", () => {
+    const { container } = render(
+      <CourseMap
+        places={[course]}
+        selectedKeys={[]}
+        onTogglePlace={vi.fn()}
+        isDark={false}
+      />,
+    );
 
-    expect(screen.getByRole("heading", { name: "Wet hours by node" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "North Shore golf courses" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Select a course on the map to investigate."),
+    ).toBeInTheDocument();
     expect(container.querySelector(".panel")).not.toBeNull();
   });
 });

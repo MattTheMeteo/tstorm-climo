@@ -21,6 +21,7 @@ import {
   colorFor,
   nodeDataFromWetness,
   outlineFeaturesFromPlaces,
+  placeCoordinates,
   radiusForWetHours,
   tooltipTextFor,
 } from "@/lib/map";
@@ -326,6 +327,17 @@ describe("ranking, chart, selection, and map presentation logic", () => {
       "Footprint Course · golf_course",
     );
     expect(tooltipTextFor(null)).toBeNull();
+  });
+
+  it("uses the course point geometry rather than a separate sampling coordinate", () => {
+    const coursePoint = {
+      ...place("osm:way:5", "Course Point"),
+      lat: 42.51,
+      lon: -70.91,
+      geometry: { type: "Point" as const, coordinates: [-70.89, 42.52] as [number, number] },
+    };
+
+    expect(placeCoordinates(coursePoint)).toEqual([-70.89, 42.52]);
   });
 });
 
